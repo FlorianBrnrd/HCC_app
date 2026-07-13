@@ -1,6 +1,6 @@
 import streamlit as st
 
-st.title(":material/genetics: Simple-cell: a *C. elegans* scRNA-seq Explorer Tool")
+st.title(":material/genetics: High Coverage Cell Explorer")
 st.write(
     """
     *This online tool is currently a work in progress.*
