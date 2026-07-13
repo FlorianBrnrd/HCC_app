@@ -1,0 +1,11 @@
+node	cluster_name	WBgeneID	gene_name	mean_expression	PCC	used_for_annotation	node_annotation	gene_other_annotations
+8474	[8474] cluster K10D2.8	WBGene00017172	F02C9.1	718.59	0.741	True	male WBbt:0007850	germ line WBbt:0005784; striated muscle WBbt:0005779; germline precursor cell WBbt:0006849; male WBbt:0007850; muscular system WBbt:0005737; reproductive system WBbt:0005747
+8474	[8474] cluster K10D2.8	WBGene00189952	K10D2.8	1008.71	0.675	True	male WBbt:0007850	male WBbt:0007850; muscular system WBbt:0005737; head mesodermal cell WBbt:0004697
+8474	[8474] cluster K10D2.8	WBGene00012872	Y45F10B.8	178.2	0.671	True	male WBbt:0007850	male WBbt:0007850
+8474	[8474] cluster K10D2.8	WBGene00050956	C14A6.13	914.2	0.609	True	male WBbt:0007850	striated muscle WBbt:0005779; male WBbt:0007850; muscular system WBbt:0005737
+8474	[8474] cluster K10D2.8	WBGene00018502	F46F5.11	441.6	0.602	True	male WBbt:0007850	germ line WBbt:0005784; male WBbt:0007850; reproductive system WBbt:0005747
+8474	[8474] cluster K10D2.8	WBGene00020342	fbxa-201	291.02	0.59	True	male WBbt:0007850	ABalpapaap WBbt:0006023; ABarappaap WBbt:0006103; male WBbt:0007850
+8474	[8474] cluster K10D2.8	WBGene00019155	H04M03.11	219.01	0.587	True	male WBbt:0007850	male WBbt:0007850
+8474	[8474] cluster K10D2.8	WBGene00008185	best-10	136.76	0.452	True	male WBbt:0007850	ABaraapppaa WBbt:0006566; germ line WBbt:0005784; male WBbt:0007850; ABaraapapaa WBbt:0006455; reproductive system WBbt:0005747
+8474	[8474] cluster K10D2.8	WBGene00044392	C25H3.16	253.83	0.438	True	male WBbt:0007850	lateral ganglion right WBbt:0005101; somatic nervous system WBbt:0005760; gonadal primordium WBbt:0008366; g1P WBbt:0004528; AVK WBbt:0006823; nervous system WBbt:0005735; pharynx WBbt:0003681; thermosensory neuron WBbt:0005838; male WBbt:0007850; ASE WBbt:0005663
+8474	[8474] cluster K10D2.8	WBGene00005609	srj-21	33.25	0.387	True	male WBbt:0007850	lateral ganglion right WBbt:0005101; g1AL WBbt:0004532; somatic nervous system WBbt:0005760; g1AR WBbt:0004530; AWA WBbt:0005670; AWCR WBbt:0003826; pharynx WBbt:0003681; lateral ganglion left WBbt:0005103; ASG WBbt:0005664; male WBbt:0007850; AWCL WBbt:0003827

@@ -1,0 +1,7 @@
+node	cluster_name	WBgeneID	gene_name	mean_expression	PCC	used_for_annotation	node_annotation	gene_other_annotations
+8104	[8104] cluster F23F12.13	WBGene00016786	cyp-35A4	223.24	0.587	True	intestine WBbt:0005772	intestine WBbt:0005772; muscular system WBbt:0005737
+8104	[8104] cluster F23F12.13	WBGene00008596	clec-54	174.59	0.552	True	intestine WBbt:0005772	GLR WBbt:0005176; intestine WBbt:0005772; anterior arcade cell WBbt:0005794; epithelial system WBbt:0005730; nervous system WBbt:0005735; muscular system WBbt:0005737
+8104	[8104] cluster F23F12.13	WBGene00044455	F23F12.13	277.76	0.511	True	intestine WBbt:0005772	intestine WBbt:0005772
+8104	[8104] cluster F23F12.13	WBGene00020329	bath-26	251.63	0.495	True	intestine WBbt:0005772	excretory system WBbt:0005736; RIB WBbt:0005834; lateral ganglion right WBbt:0005101; intestine WBbt:0005772; somatic nervous system WBbt:0005760; epithelial system WBbt:0005730; excretory duct cell WBbt:0004540; excretory secretory system WBbt:0006850; lateral ganglion left WBbt:0005103; excretory socket cell WBbt:0004534; muscular system WBbt:0005737; head mesodermal cell WBbt:0004697
+8104	[8104] cluster F23F12.13	WBGene00022076	daao-1	130.88	0.404	True	intestine WBbt:0005772	intestine WBbt:0005772
+8104	[8104] cluster F23F12.13	WBGene00012501	Y26D4A.3	42.43	0.345	True	intestine WBbt:0005772	intestine WBbt:0005772

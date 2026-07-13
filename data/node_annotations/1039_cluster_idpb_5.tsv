@@ -1,0 +1,3 @@
+node	cluster_name	WBgeneID	gene_name	mean_expression	PCC	used_for_annotation	node_annotation	gene_other_annotations
+1039	[1039] cluster idpb-5	WBGene00011266	idpb-5	25632.41	0.553	True	g1AL WBbt:0004532	g1AL WBbt:0004532; g1AR WBbt:0004530; pharynx WBbt:0003681
+1039	[1039] cluster idpb-5	WBGene00010576	clec-116	30.99	0.337	False	g1AL WBbt:0004532	germ line WBbt:0005784; reproductive system WBbt:0005747

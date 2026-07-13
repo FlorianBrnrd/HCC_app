@@ -1,0 +1,2 @@
+node	cluster_name	WBgeneID	gene_name	mean_expression	PCC	used_for_annotation	node_annotation	gene_other_annotations
+1025	[1025] cluster srlf-5	WBGene00007869	srlf-5	7687.95	0.485	True	DVB WBbt:0004822	RME WBbt:0005399; AVL WBbt:0003843; anterior ganglion WBbt:0005375; DVB WBbt:0004822; somatic nervous system WBbt:0005760; epithelial system WBbt:0005730; g2 WBbt:0003710; nervous system WBbt:0005735; pharynx WBbt:0003681; dorso-rectal ganglion WBbt:0005212

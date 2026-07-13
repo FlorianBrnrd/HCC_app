@@ -1,0 +1,7 @@
+node	cluster_name	WBgeneID	gene_name	mean_expression	PCC	used_for_annotation	node_annotation	gene_other_annotations
+5819	[5819] cluster F53B2.8	WBGene00016502	C37C3.10	206.3	0.561	True	intestine WBbt:0005772	intestine WBbt:0005772
+5819	[5819] cluster F53B2.8	WBGene00018616	F48G7.5	2104.36	0.559	True	intestine WBbt:0005772	intestine WBbt:0005772; CAN WBbt:0006827; muscular system WBbt:0005737; head mesodermal cell WBbt:0004697
+5819	[5819] cluster F53B2.8	WBGene00009957	F53B2.8	2975.89	0.5	True	intestine WBbt:0005772	ASJ WBbt:0005667; ABprpapppa WBbt:0005972; anterior ganglion WBbt:0005375; intestine WBbt:0005772; ABalpappaa WBbt:0006051; rectal gland cell WBbt:0005799; epithelial system WBbt:0005730; CEPsoVL WBbt:0004918; rectal valve cell WBbt:0005797; ABarapapaa WBbt:0006001; pharyngeal-intestinal valve WBbt:0005767; muscular system WBbt:0005737; head mesodermal cell WBbt:0004697
+5819	[5819] cluster F53B2.8	WBGene00019214	H20E11.2	70.6	0.369	True	intestine WBbt:0005772	intestine WBbt:0005772
+5819	[5819] cluster F53B2.8	WBGene00019653	cest-31	25.8	0.271	True	intestine WBbt:0005772	hermaphrodite WBbt:0007849; spermatheca WBbt:0005319; intestine WBbt:0005772; somatic nervous system WBbt:0005760; epithelial system WBbt:0005730; nervous system WBbt:0005735; reproductive tract WBbt:0005744; reproductive system WBbt:0005747
+5819	[5819] cluster F53B2.8	WBGene00016755	C49A9.1	39.76	0.249	True	intestine WBbt:0005772	intestine WBbt:0005772

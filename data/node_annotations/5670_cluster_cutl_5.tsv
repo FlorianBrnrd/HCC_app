@@ -1,0 +1,3 @@
+node	cluster_name	WBgeneID	gene_name	mean_expression	PCC	used_for_annotation	node_annotation	gene_other_annotations
+5670	[5670] cluster cutl-5	WBGene00017351	cutl-5	731.2	0.636	True	anterior arcade cell WBbt:0005794	anterior arcade cell WBbt:0005794; epithelial system WBbt:0005730; male WBbt:0007850; muscular system WBbt:0005737
+5670	[5670] cluster cutl-5	WBGene00007802	cutl-27	292.38	0.457	True	anterior arcade cell WBbt:0005794	intestine WBbt:0005772; anterior arcade cell WBbt:0005794; PLM WBbt:0005490; epithelial system WBbt:0005730

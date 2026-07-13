@@ -1,0 +1,4 @@
+node	cluster_name	WBgeneID	gene_name	mean_expression	PCC	used_for_annotation	node_annotation	gene_other_annotations
+1867	[1867] cluster R148.8	WBGene00006179	str-130	120.47	0.661	True	AWC-OFF WBbt:0005833	AWC-OFF WBbt:0005833; lateral ganglion left WBbt:0005103; AWCL WBbt:0003827
+1867	[1867] cluster R148.8	WBGene00001785	gst-37	60.23	0.63	False	AWC-OFF WBbt:0005833	hook sensillum WBbt:0006930; lateral ganglion right WBbt:0005101; ray WBbt:0006941; male WBbt:0007850; ASE WBbt:0005663; reproductive tract WBbt:0005744; reproductive system WBbt:0005747
+1867	[1867] cluster R148.8	WBGene00020645	T21D9.2	60.23	0.452	False	AWC-OFF WBbt:0005833	RIB WBbt:0005834; lateral ganglion right WBbt:0005101; somatic nervous system WBbt:0005760; lateral ganglion left WBbt:0005103; AVB WBbt:0005841; ASK WBbt:0005668

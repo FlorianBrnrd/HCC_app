@@ -1,0 +1,4 @@
+node	cluster_name	WBgeneID	gene_name	mean_expression	PCC	used_for_annotation	node_annotation	gene_other_annotations
+7515	[7515] cluster ugt-44	WBGene00010217	sre-31	98.06	0.451	True	intestine WBbt:0005772	pm8 WBbt:0004302; intestine WBbt:0005772; pharynx WBbt:0003681; muscular system WBbt:0005737
+7515	[7515] cluster ugt-44	WBGene00235311	Y57E12B.11	198.08	0.44	True	intestine WBbt:0005772	intestine WBbt:0005772
+7515	[7515] cluster ugt-44	WBGene00008486	ugt-44	720.66	0.318	True	intestine WBbt:0005772	intestine WBbt:0005772; PVD WBbt:0006831; OLL WBbt:0006847; germ line WBbt:0005784; reproductive system WBbt:0005747

@@ -1,0 +1,2 @@
+node	cluster_name	WBgeneID	gene_name	mean_expression	PCC	used_for_annotation	node_annotation	gene_other_annotations
+1373	[1373] cluster idpp-9	WBGene00020252	T05C1.5	53.32	0.329	True	ABplpppppp WBbt:0005960	ABplpppppp WBbt:0005960; ABprpppppp WBbt:0006430; epithelial system WBbt:0005730; g2 WBbt:0003710; pharynx WBbt:0003681; mc3 WBbt:0003707

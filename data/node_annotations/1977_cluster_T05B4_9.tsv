@@ -1,0 +1,2 @@
+node	cluster_name	WBgeneID	gene_name	mean_expression	PCC	used_for_annotation	node_annotation	gene_other_annotations
+1977	[1977] cluster T05B4.9	WBGene00020240	T05B4.9	1326.3	0.403	True	g1AL WBbt:0004532	g1AL WBbt:0004532; g1P WBbt:0004528; g1AR WBbt:0004530; pharynx WBbt:0003681

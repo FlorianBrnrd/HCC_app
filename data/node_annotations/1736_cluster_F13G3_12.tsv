@@ -1,0 +1,3 @@
+node	cluster_name	WBgeneID	gene_name	mean_expression	PCC	used_for_annotation	node_annotation	gene_other_annotations
+1736	[1736] cluster F13G3.12	WBGene00008770	F13G3.12	2081.49	0.707	False	XXX cell WBbt:0007855	body wall WBbt:0005742; ventral left quadrant body wall muscle WBbt:0005818; nervous system WBbt:0005735; striated muscle WBbt:0005779; muscular system WBbt:0005737
+1736	[1736] cluster F13G3.12	WBGene00010939	M163.7	11.79	0.4	True	XXX cell WBbt:0007855	XXX cell WBbt:0007855; MSpapaapa WBbt:0006627; anterior ganglion WBbt:0005375; amphid socket cell WBbt:0008379; MSaapaapa WBbt:0006494; epithelial system WBbt:0005730; nervous system WBbt:0005735; F cell WBbt:0004799; U cell WBbt:0004942

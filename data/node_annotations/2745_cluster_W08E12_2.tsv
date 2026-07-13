@@ -1,0 +1,11 @@
+node	cluster_name	WBgeneID	gene_name	mean_expression	PCC	used_for_annotation	node_annotation	gene_other_annotations
+2745	[2745] cluster W08E12.2	WBGene00021083	W08E12.2	48684.76	0.808	True	pharynx WBbt:0003681	corpus WBbt:0003733; anterior arcade cell WBbt:0005794; epithelial system WBbt:0005730; pharynx WBbt:0003681; posterior arcade cell WBbt:0005795; NSM WBbt:0003666; male WBbt:0007850
+2745	[2745] cluster W08E12.2	WBGene00000024	abu-1	10369.39	0.8	True	pharynx WBbt:0003681	hermaphrodite WBbt:0007849; anchor cell WBbt:0004522; intestine WBbt:0005772; somatic gonad WBbt:0005785; pharynx WBbt:0003681; reproductive tract WBbt:0005744
+2745	[2745] cluster W08E12.2	WBGene00004098	pqn-2	10209.59	0.796	True	pharynx WBbt:0003681	BDU WBbt:0006826; somatic nervous system WBbt:0005760; pharynx WBbt:0003681; ALM WBbt:0005406
+2745	[2745] cluster W08E12.2	WBGene00007251	nspb-9	21168.55	0.786	True	pharynx WBbt:0003681	pm5 WBbt:0003737; MSaapapa WBbt:0006323; corpus WBbt:0003733; pm7 WBbt:0003721; pm4 WBbt:0003739; MSpapapa WBbt:0006308; epithelial system WBbt:0005730; pharynx WBbt:0003681; mc3 WBbt:0003707; pharyngeal-intestinal valve WBbt:0005767; MSaaaaapa WBbt:0006202; pm3 WBbt:0003740; muscular system WBbt:0005737
+2745	[2745] cluster W08E12.2	WBGene00004099	abu-15	8825.3	0.753	True	pharynx WBbt:0003681	lateral ganglion right WBbt:0005101; AVH WBbt:0006821; somatic nervous system WBbt:0005760; pharynx WBbt:0003681; lateral ganglion left WBbt:0005103; muscular system WBbt:0005737
+2745	[2745] cluster W08E12.2	WBGene00018162	nspb-3	7840.69	0.634	False	pharynx WBbt:0003681	nervous system WBbt:0005735
+2745	[2745] cluster W08E12.2	WBGene00000030	abu-7	3948.64	0.592	True	pharynx WBbt:0003681	CAN WBbt:0006827; epithelial system WBbt:0005730; pharynx WBbt:0003681
+2745	[2745] cluster W08E12.2	WBGene00018169	nspb-2	12361.42	0.591	True	pharynx WBbt:0003681	epithelial system WBbt:0005730; pharynx WBbt:0003681; rectal valve cell WBbt:0005797
+2745	[2745] cluster W08E12.2	WBGene00000029	abu-6	3069.7	0.579	True	pharynx WBbt:0003681	pharynx WBbt:0003681; muscular system WBbt:0005737
+2745	[2745] cluster W08E12.2	WBGene00004141	pqn-57	1828.18	0.486	True	pharynx WBbt:0003681	pharynx WBbt:0003681; muscular system WBbt:0005737

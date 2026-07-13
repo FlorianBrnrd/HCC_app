@@ -1,0 +1,3 @@
+node	cluster_name	WBgeneID	gene_name	mean_expression	PCC	used_for_annotation	node_annotation	gene_other_annotations
+118	[118] cluster F38A5.22	WBGene00020476	T13B5.9	760.21	0.576	True	spermatheca WBbt:0005319	hermaphrodite WBbt:0007849; spermatheca WBbt:0005319; reproductive tract WBbt:0005744
+118	[118] cluster F38A5.22	WBGene00235391	F38A5.22	2707.66	0.567	True	spermatheca WBbt:0005319	vm1 WBbt:0006917; hermaphrodite WBbt:0007849; lateral ganglion right WBbt:0005101; spermatheca WBbt:0005319; thermosensory neuron WBbt:0005838; lateral ganglion left WBbt:0005103; vm2 WBbt:0006918; sex organ WBbt:0008422; anal depressor muscle WBbt:0004292; uterine muscle WBbt:0005342; muscular system WBbt:0005737; reproductive tract WBbt:0005744

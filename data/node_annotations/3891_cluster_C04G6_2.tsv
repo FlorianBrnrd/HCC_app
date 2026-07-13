@@ -1,0 +1,3 @@
+node	cluster_name	WBgeneID	gene_name	mean_expression	PCC	used_for_annotation	node_annotation	gene_other_annotations
+3891	[3891] cluster C04G6.2	WBGene00000930	dao-4	1154.82	0.642	True	anchor cell WBbt:0004522	hermaphrodite WBbt:0007849; anchor cell WBbt:0004522; intestine WBbt:0005772; amphid sheath cell WBbt:0006754; epithelial system WBbt:0005730; nervous system WBbt:0005735; somatic gonad WBbt:0005785; reproductive tract WBbt:0005744; reproductive system WBbt:0005747
+3891	[3891] cluster C04G6.2	WBGene00015453	C04G6.2	2197.78	0.62	True	anchor cell WBbt:0004522	hermaphrodite WBbt:0007849; anchor cell WBbt:0004522; epithelial system WBbt:0005730; somatic gonad WBbt:0005785; reproductive tract WBbt:0005744

@@ -1,0 +1,4 @@
+node	cluster_name	WBgeneID	gene_name	mean_expression	PCC	used_for_annotation	node_annotation	gene_other_annotations
+5189	[5189] cluster H12D21.3	WBGene00013786	nep-24	56.8	0.361	True	ABalpapaap WBbt:0006023	ABalpapaap WBbt:0006023; ABarappaap WBbt:0006103
+5189	[5189] cluster H12D21.3	WBGene00021751	Y50D7A.1	146.43	0.265	True	ABalpapaap WBbt:0006023	ABalpapaap WBbt:0006023; hermaphrodite WBbt:0007849; ABarappaap WBbt:0006103; PVD WBbt:0006831; OLL WBbt:0006847; oocyte WBbt:0006797; ABalaaaala WBbt:0005966; ABalaapaaa WBbt:0006732
+5189	[5189] cluster H12D21.3	WBGene00018632	tag-296	498.31	0.258	False	ABalpapaap WBbt:0006023	Q cell WBbt:0008598; somatic nervous system WBbt:0005760; ABalaapppa WBbt:0006026; ABalapaapa WBbt:0005981; germ line WBbt:0005784; SDQ WBbt:0006844; posterior lateral ganglion WBbt:0005465; muscular system WBbt:0005737; reproductive system WBbt:0005747

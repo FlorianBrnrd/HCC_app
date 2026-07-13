@@ -1,0 +1,4 @@
+node	cluster_name	WBgeneID	gene_name	mean_expression	PCC	used_for_annotation	node_annotation	gene_other_annotations
+7474	[7474] cluster C34B7.1	WBGene00235330	F21C10.18	594.43	0.447	True	pharyngeal-intestinal valve WBbt:0005767	pharyngeal-intestinal valve WBbt:0005767
+7474	[7474] cluster C34B7.1	WBGene00007911	C34B7.1	719.52	0.347	True	pharyngeal-intestinal valve WBbt:0005767	ABplpapppa WBbt:0006225; hermaphrodite WBbt:0007849; intestine WBbt:0005772; gonadal primordium WBbt:0008366; epithelial system WBbt:0005730; oocyte WBbt:0006797; nervous system WBbt:0005735; pharyngeal-intestinal valve WBbt:0005767
+7474	[7474] cluster C34B7.1	WBGene00009077	F23B2.10	46.25	0.225	False	pharyngeal-intestinal valve WBbt:0005767	rectal gland cell WBbt:0005799

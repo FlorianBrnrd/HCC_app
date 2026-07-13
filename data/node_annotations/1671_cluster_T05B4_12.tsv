@@ -1,0 +1,2 @@
+node	cluster_name	WBgeneID	gene_name	mean_expression	PCC	used_for_annotation	node_annotation	gene_other_annotations
+1671	[1671] cluster T05B4.12	WBGene00020243	T05B4.12	1086.36	0.867	True	g1P WBbt:0004528	g1P WBbt:0004528; epithelial system WBbt:0005730; nervous system WBbt:0005735; pharynx WBbt:0003681; cephalic sheath cell WBbt:0008406

@@ -1,0 +1,2 @@
+node	cluster_name	WBgeneID	gene_name	mean_expression	PCC	used_for_annotation	node_annotation	gene_other_annotations
+3888	[3888] cluster col-152	WBGene00255598	BE0003N10.6	1416.73	0.667	True	ABaraapppaa WBbt:0006566	lateral ganglion right WBbt:0005101; ABaraapppaa WBbt:0006566; AVH WBbt:0006821; somatic nervous system WBbt:0005760; gonadal primordium WBbt:0008366; AVK WBbt:0006823; lateral ganglion left WBbt:0005103; ABaraapapaa WBbt:0006455
