@@ -21,7 +21,6 @@ import streamlit as st
 import gene_plots as gp
 
 DATA_DIR = Path(os.environ.get("GENE_APP_DATA_DIR", Path(__file__).parent / "data"))
-MATRIX_PATH = DATA_DIR / "HCC_gene_count_matrix_rpm.tsv"
 MATRIX_REINDEXED_PATH = DATA_DIR / "HCC_gene_count_matrix_rpm_reindexed_unsupervised.tsv"
 TREE_PATH = DATA_DIR / "HCC_graph_pruned.pickle"
 SPECTRUM_PATH = DATA_DIR / "HCC_cluster_expression_spectrum.pkl"
@@ -62,9 +61,23 @@ def load_cell_linkage():
 
 @st.cache_resource(show_spinner="Loading gene expression matrix (this can take a while)...")
 def load_gene_matrix():
-    gene_matrix = pd.read_csv(MATRIX_PATH, sep="\t", index_col=0)
+    # The raw (non-reindexed) matrix is never actually needed: every usage
+    # elsewhere in the app is label-based (.loc[cells], column selection,
+    # mean/sum) or an .index/.columns check -- all order-independent. Only
+    # plot_gene_across_all_cells() cares about row order, and it's always
+    # called with the reindexed matrix specifically. So we parse the ~568MB
+    # file ONCE and use the same DataFrame for both roles, instead of
+    # loading two ~568MB files and holding both permanently in memory.
+    #
+    # dtype=float32 is applied via .astype() AFTER parsing, not as a
+    # pd.read_csv(dtype=...) argument: passing a single scalar dtype to
+    # read_csv tries to cast every column -- including the cell-barcode
+    # column that's about to become the index -- before index_col takes
+    # effect, which fails on the barcode strings. Downcasting afterward
+    # only touches the DataFrame's columns, never the index.
     gene_matrix_reindexed = pd.read_csv(MATRIX_REINDEXED_PATH, sep="\t", index_col=0)
-    return gene_matrix, gene_matrix_reindexed
+    gene_matrix_reindexed = gene_matrix_reindexed.astype(np.float32)
+    return gene_matrix_reindexed
 
 
 
@@ -97,4 +110,4 @@ def load_annotation_data():
 
 
 def matrix_exists():
-    return MATRIX_PATH.exists()
+    return MATRIX_REINDEXED_PATH.exists()

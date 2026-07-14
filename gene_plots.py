@@ -917,3 +917,19 @@ def plot_gene_across_all_cells(gene, gene_matrix, highlight_cells=None, highligh
 
     return fig
 
+def wormbase_anatomy_link(annotation_text):
+    """
+    Parse a "{name} WBbt:XXXXXXX" style annotation string (as stored in the
+    node_annotation / gene_other_annotations columns) into a (label, url)
+    pair linking to that term's WormBase anatomy page. Returns (None, None)
+    if no WBbt ID is found (e.g. empty/missing annotation).
+    """
+    if not annotation_text:
+        return None, None
+    match = re.search(r"WBbt:\d+", annotation_text)
+    if not match:
+        return None, None
+    wbbt_id = match.group(0)
+    label = annotation_text.replace(wbbt_id, "").strip()
+    url = f"https://wormbase.org/species/all/anatomy_term/{wbbt_id}"
+    return label, url
