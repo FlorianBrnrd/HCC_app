@@ -14,6 +14,7 @@ from pathlib import Path
 import streamlit as st
 import pandas as pd
 import matplotlib.pyplot as plt
+import networkx as nx
 import gene_plots as gp
 import data_loaders as dl
 
@@ -28,20 +29,54 @@ st.set_page_config(page_title="Gene Expression Explorer", layout="wide")
 # ---------------------------------------------------------------------------
 
 @st.fragment
-def render_gene_table_and_extra_plots(node, gene_to_display, ref_gene, cluster_rows,
+def render_gene_table_and_extra_plots(node, gene_to_display, ref_gene, tree, annotation_df,
                                        context_matrix, cluster_cells, cluster_color):
-    if cluster_rows.empty:
-        return
 
-    # Reserve a spot for the additional-gene plots right here -- i.e.
-    # directly below the main reference/queried gene plots above this
-    # fragment, and above the table itself. Filled in further down, once
-    # we know which genes were checked in the table below. Created fresh
-    # on every fragment rerun (not shared across reruns), so there's no
-    # risk of stale/duplicate plots accumulating across toggles.
+    # Reserve a spot for the additional-gene plots FIRST -- its position
+    # (right under the main reference/queried gene plots above this
+    # fragment) is fixed here, even though nothing gets filled into it
+    # until after the toggle/table below are processed. Created fresh on
+    # every fragment rerun (not shared across reruns), so there's no risk
+    # of stale/duplicate plots accumulating across toggles.
     extra_plots_slot = st.container()
 
     st.markdown(''' #### :material/select_check_box: Add more genes from this cluster's annotation table:''')
+
+    include_subclusters = st.toggle(
+        "Include sub-cluster annotations",
+        value=False,
+        help=(
+            "Also show curated genes from this cluster's descendant "
+            "sub-clusters, not just this cluster's own annotation rows. "
+            "Any of them can be plotted the same way."
+        ),
+    )
+
+    if include_subclusters:
+        relevant_nodes = nx.descendants(tree, node) | {node}
+        columns = ["gene_name", "node", "node_annotation", "gene_other_annotations",
+                   "mean_expression", "PCC", "used_for_annotation"]
+        column_labels = ["gene", "Cluster", "Predicted cell annotation", "Prior gene annotations",
+                          "mean expression (RPM)", "PCC score", "Known marker"]
+    else:
+        relevant_nodes = {node}
+        columns = ["gene_name", "node_annotation", "gene_other_annotations",
+                   "mean_expression", "PCC", "used_for_annotation"]
+        column_labels = ["gene", "Predicted cell annotation", "Prior gene annotations",
+                          "mean expression (RPM)", "PCC score", "Known marker"]
+
+    cluster_rows = (
+        annotation_df[annotation_df["node"].isin(relevant_nodes)]
+        [columns]
+        .sort_values("mean_expression", ascending=False)
+        .reset_index(drop=True)
+    )
+    cluster_rows.columns = column_labels
+
+    if cluster_rows.empty:
+        st.info("No curated genes found for this cluster (or its sub-clusters).")
+        return
+
     st.markdown('''Select additional genes of interest to output their expression across cells''')
 
     picker_df = cluster_rows.copy()
@@ -51,7 +86,7 @@ def render_gene_table_and_extra_plots(node, gene_to_display, ref_gene, cluster_r
         picker_df,
         hide_index=True,
         disabled=[c for c in picker_df.columns if c != "Plot"],
-        key=f"annotation_picker_{node}",
+        key=f"annotation_picker_{node}_{include_subclusters}",
         width='stretch',
     )
 
@@ -100,22 +135,13 @@ def render_results(gene_to_display, node, match_label, gene_matrix_reindexed, tr
     cluster_color = cluster_colors.get(node, gp.cluster_color_for_node(node))
     ref_gene, ref_mean = gp.reference_gene_for_node(node, annotation_df)
 
-    cluster_rows = (
-        annotation_df[annotation_df["node"] == node]
-        [["gene_name", "node_annotation", "gene_other_annotations", "mean_expression", "PCC", "used_for_annotation"]]
-        .sort_values("mean_expression", ascending=False)
-        .reset_index(drop=True)
-    )
-    cluster_rows.columns = [
-        "gene", "Predicted cell annotation", "Prior gene annotations",
-        "mean expression (RPM)", "PCC score", "Known marker",
-    ]
-
     # This cluster's own predicted cell annotation is the same for every
-    # row (it's a property of the node, not the gene) -- surface it once,
-    # as a clickable WormBase link, rather than only inside the table.
-    if not cluster_rows.empty:
-        node_annotation_raw = cluster_rows["Predicted cell annotation"].iloc[0]
+    # gene row in the table (it's a property of the node, not the gene) --
+    # surface it once here as a clickable WormBase link, independent of
+    # whatever the gene table's sub-cluster toggle is currently showing.
+    own_node_rows = annotation_df[annotation_df["node"] == node]
+    if not own_node_rows.empty:
+        node_annotation_raw = own_node_rows["node_annotation"].iloc[0]
         label, url = gp.wormbase_anatomy_link(node_annotation_raw)
         if url:
             st.markdown(f"🔬 **Predicted cell annotation:** [{label} ↗]({url})")
@@ -203,7 +229,7 @@ def render_results(gene_to_display, node, match_label, gene_matrix_reindexed, tr
     # --- Section 3: gene table + additional gene plots, full width,
     # scoped as its own fragment (see function above) ---
     render_gene_table_and_extra_plots(
-        node, gene_to_display, ref_gene, cluster_rows,
+        node, gene_to_display, ref_gene, tree, annotation_df,
         context_matrix, cluster_cells, cluster_color,
     )
 
