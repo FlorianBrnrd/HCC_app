@@ -42,7 +42,7 @@ Opens on `http://localhost:8000` by default.
 
 | Streamlit                                     | Shiny for Python                              |
 | --------------------------------------------- | --------------------------------------------- |
-| `Home.py` + `st.navigation` + `pages/`        | `ui.page_navbar` with three `ui.nav_panel`s   |
+| `Home.py` + `st.navigation` + `pages/`        | `ui.page_navbar` with two `ui.nav_panel`s     |
 | `st.set_page_config`                          | Args on `ui.page_navbar`                      |
 | `st.cache_resource` on loaders                | `@lru_cache(maxsize=None)` (process-scoped)   |
 | `st.text_input`, `st.selectbox`, `st.slider`  | `ui.input_text`, `ui.input_selectize`, `ui.input_slider` |
@@ -50,7 +50,7 @@ Opens on `http://localhost:8000` by default.
 | `st.toggle`                                   | `ui.input_switch`                             |
 | `st.pyplot(fig)`                              | `@render.plot`                                |
 | `st.markdown`, `st.info`, `st.success`        | `ui.markdown`, `ui.div(..., class_="alert alert-*")` |
-| `st.data_editor` with a "Plot" checkbox column| `render.DataGrid(selection_mode="rows")`, read via `.data_view(selected=True)` |
+| `st.data_editor` with a "Plot" checkbox column| ipyaggrid `Grid` (via shinywidgets) with a JS "Plot" button column that sends `input.plot_gene_click` |
 | `st.fragment`-scoped rerun for the gene table | Automatic — falls out of the reactive graph, no scoping needed |
 | Conditional widget appearance                 | `ui.panel_conditional("input.x == 'y'", ...)` or `@render.ui` |
 | Multi-cluster tissue picker                   | Dynamic `input_select` rendered by `@render.ui` |
@@ -70,33 +70,46 @@ inputs ─┐
         ▼
      resolved ──▶ cluster_ctx ─┬─▶ spectrum_inputs ─▶ spectrum_plot
                                │
-                               ├─▶ context_matrix ─┬─▶ ref_gene_plot
-                               │                    ├─▶ query_gene_plot
-                               │                    └─▶ extra_plot_i (×20)
+                               ├─▶ ref_gene_pane / query_gene_plot / extra_plot_i (×20)
+                               │        ▲
+                               │        └── context_matrix ◀── range inputs
                                │
-                               └─▶ gene_table_df ─▶ gene_table ─▶ selected_extra_genes
+                               ├─▶ gene_table_df ─▶ gene_table
+                               │
+                               └─▶ has_cluster ─▶ context_section (tab layout)
+
+plotted_genes (Plot buttons / add-gene box) ─▶ selected_extra_genes ─▶ per-slot values
 ```
 
 Concretely:
 
 - Moving the **threshold slider** invalidates only `spectrum_inputs` and
   `spectrum_plot`. Ref/query/extra plots and the table don't recompute.
-- Toggling **zoom to cluster** invalidates `context_matrix` and the three
-  plot families that read it. The spectrum plot and table don't recompute.
+- Changing the **cell range** (or zoom to cluster) invalidates
+  `context_matrix` and the plots that read it. The spectrum plot and table
+  don't recompute.
 - Toggling **include sub-cluster annotations** invalidates `gene_table_df`
   only. All plots stay put.
-- Ticking rows in the **gene table** invalidates only `selected_extra_genes`
-  and the affected extra-plot slots. Nothing else re-runs.
+- Clicking **Plot** in the gene table only re-renders the extra-plot slots
+  whose gene changed. The grid itself isn't rebuilt: button state lives
+  client-side in `window.HCC_plotted_genes`.
+- **Navigating** between clusters doesn't rebuild the context tab layout
+  (it depends on `has_cluster`, not `cluster_ctx`), so the range, the
+  sub-cluster switch and the add-gene text are kept.
 
 None of this needs `@st.fragment`.
 
 ## Prototype-level shortcuts
 
-- **Extra-gene plots are pre-registered as 20 slots.** Shiny needs output
-  IDs to exist at server-start; you can't invent new IDs at request
-  time. The output_ui for each slot returns nothing when the slot is
-  empty, so the user only sees plots for the genes they actually
-  selected. Raise `MAX_EXTRA_GENES` if 20 is too few.
+- **Extra-gene plots are pre-registered as 20 slots** (`MAX_EXTRA_GENES`).
+  The output_ui for each slot returns nothing when the slot is empty, so
+  the user only sees plots for the genes they actually selected. Beyond
+  20, the header says how many are hidden.
+- **Large clusters** (more than `MAX_NAV_CELLS` = 1000 cells) can't be
+  reached with the nav buttons and get a message instead of the spectrum
+  plot, whichever way they were reached.
+- **ipyaggrid bundles AG Grid Enterprise** and logs an "evaluation
+  licence" notice in the browser console. Only community features are used.
 - **`@render.plot` DPI is not controlled here.** The Streamlit version
   used `dpi=500` on the spectrum plot, which is one of the OOM culprits
   on Streamlit Community Cloud. Shiny's `@render.plot` renders via
@@ -104,5 +117,7 @@ None of this needs `@st.fragment`.
   is a good moment to drop it to 150–200.
 - **Deployment target.** Shiny apps can go on [shinyapps.io](https://www.shinyapps.io/)
   (free tier: 1 GB RAM, 25 active hours/month — comparable to Streamlit
-  Community Cloud), Hugging Face Spaces, or self-host. Nothing about the
-  code changes.
+  Community Cloud), Posit Connect Cloud, Hugging Face Spaces, or self-host.
+  Nothing about the code changes, but the ~570 MB float32 matrix plus
+  per-cluster copies is likely too much for a 1 GB instance. The matrix
+  is stored with Git LFS, so the host must fetch LFS files.

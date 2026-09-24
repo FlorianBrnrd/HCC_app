@@ -32,7 +32,6 @@ import colorcet as cc
 import matplotlib
 import matplotlib.pyplot as plt
 import seaborn as sns
-import plotly.graph_objects as go
 
 from scipy.cluster.hierarchy import linkage, dendrogram
 from scipy.spatial.distance import pdist
@@ -86,7 +85,8 @@ def _expr_pct(cells, gene_matrix):
 
 
 def get_subtree_linkage(cluster_node, cluster_tree, gene_matrix):
-    subset_cells = get_cluster_node_cell_ids(tree=cluster_tree, node=cluster_node)
+    # Same cell filtering as prepare_* so the leaf order lines up with their rows
+    subset_cells = _resolve_cells(cluster_node, cluster_tree, gene_matrix)
     subset_expr = gene_matrix.loc[subset_cells]
     Z_sub = linkage(pdist(subset_expr), method='ward', metric='euclidean')
     return Z_sub, subset_cells
@@ -765,7 +765,7 @@ def parse_cluster_tissue(name):
 
 def build_tissue_index(cluster_names, template):
     """
-    Build tissue name (lowercased) -> list of (cluster_node, flared_genes)
+    Build tissue name (original case, e.g. "PVS") -> list of (cluster_node, flared_genes)
     for every cluster that has a parseable tissue label, regardless of
     whether it has a designated flared marker gene. `flared_genes` is an
     empty tuple for clusters with none -- callers should fall back to that
@@ -791,8 +791,7 @@ def build_tissue_index(cluster_names, template):
 def all_tissue_names(tissue_index):
     """
     Sorted list of every distinct tissue/cell-type name known to the
-    dataset (the tissue_index's keys, already lowercased by
-    build_tissue_index). Used to populate a dropdown so users can only
+    dataset (the tissue_index's keys). Used to populate a dropdown so users can only
     select tissue names that actually exist, rather than free-typing a
     possibly-misspelled one.
     """
@@ -808,15 +807,16 @@ def find_tissue_matches(query, tissue_index):
     tuple, in which case the caller should resolve a representative gene
     via most_expressed_gene_in_cluster instead.
     """
-    query_l = query.strip()
+    query_l = query.strip().lower()
     if not query_l:
         return []
 
     exact, partial = [], []
     for tissue, entries in tissue_index.items():
-        if tissue == query_l:
+        tissue_l = tissue.lower()
+        if tissue_l == query_l:
             bucket = exact
-        elif query_l in tissue:
+        elif query_l in tissue_l:
             bucket = partial
         else:
             continue
@@ -924,7 +924,7 @@ def wormbase_anatomy_link(annotation_text):
     pair linking to that term's WormBase anatomy page. Returns (None, None)
     if no WBbt ID is found (e.g. empty/missing annotation).
     """
-    if not annotation_text:
+    if not isinstance(annotation_text, str) or not annotation_text:
         return None, None
     match = re.search(r"WBbt:\d+", annotation_text)
     if not match:

@@ -43,9 +43,13 @@ CELL_LINKAGE_PATH     = DATA_DIR / "HCC_cell_linkage.csv"
 ANNOTATIONS_DIR       = DATA_DIR / "node_annotations"
 COLOR_TABLE_PATH      = DATA_DIR / "genes_and_clusters_assigned_colors.tsv"
 
-
-
-METADATA_PATH = DATA_DIR / "HCC_metadata_annotations.tsv"
+# Per-cell colors for the annotation strip. The annotations file (with a
+# `selected` RGBA column) is preferred; the reference metadata already in the
+# repo (with an `experiment_color` hex column) is the fallback.
+METADATA_PATHS = [
+    DATA_DIR / "HCC_metadata_annotations.tsv",
+    DATA_DIR / "HCC_metadata_reference.tsv",
+]
 
 
 @lru_cache(maxsize=None)
@@ -57,9 +61,10 @@ def load_cell_annotation_colors():
     plotter can pass them straight to matplotlib's `facecolor=`. Falls back
     to `experiment_color` (hex) if `selected` is missing.
     """
-    if not METADATA_PATH.exists():
+    path = next((p for p in METADATA_PATHS if p.exists()), None)
+    if path is None:
         return {}
-    df = pd.read_csv(METADATA_PATH, sep="\t", index_col=0)
+    df = pd.read_csv(path, sep="\t", index_col=0)
 
     if "selected" in df.columns:
         def _parse(s):
@@ -142,5 +147,14 @@ def load_annotation_data():
     return df, index
 
 
+def matrix_is_lfs_pointer() -> bool:
+    """True when the matrix file is a Git LFS pointer, not the real data
+    (the repo was cloned without `git lfs pull`)."""
+    if not MATRIX_REINDEXED_PATH.exists() or MATRIX_REINDEXED_PATH.stat().st_size > 1024:
+        return False
+    with open(MATRIX_REINDEXED_PATH, "rb") as f:
+        return f.read(64).startswith(b"version https://git-lfs")
+
+
 def matrix_exists() -> bool:
-    return MATRIX_REINDEXED_PATH.exists()
+    return MATRIX_REINDEXED_PATH.exists() and not matrix_is_lfs_pointer()

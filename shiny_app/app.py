@@ -5,15 +5,19 @@ Two-page navbar (spectrum + context), plotly-based interactive spectrum
 figure with dendrogram, and hierarchy navigation (parent / children).
 """
 
+import json
 import re
 
 import networkx as nx
 import numpy as np
 import matplotlib.pyplot as plt
+from matplotlib.colors import to_rgba
+from matplotlib.layout_engine import PlaceHolderLayoutEngine
 import plotly.graph_objects as go
 import scipy.cluster.hierarchy as sch
 from plotly.subplots import make_subplots
 from shiny import App, Inputs, Outputs, Session, reactive, render, ui
+from shiny.types import SilentException
 from shinywidgets import output_widget, render_widget
 from matplotlib.ticker import FuncFormatter
 from ipyaggrid import Grid
@@ -21,14 +25,20 @@ from ipyaggrid import Grid
 import data_loaders as dl
 import gene_plots as gp
 
-MAX_EXTRA_GENES = 200  # pre-registered output slots (effectively unbounded)
-MAX_NAV_CELLS = 1000  # nav buttons for clusters larger than this are disabled
+MAX_EXTRA_GENES = 20  # pre-registered extra-plot output slots
+MAX_NAV_CELLS = 1000  # clusters larger than this aren't navigable and get no spectrum plot
 
 
 # ---------------------------------------------------------------------------
 # Process-scoped data
 # ---------------------------------------------------------------------------
 
+if dl.matrix_is_lfs_pointer():
+    raise SystemExit(
+        f"{dl.MATRIX_REINDEXED_PATH} is a Git LFS pointer, not the matrix itself.\n"
+        "Run `git lfs install && git lfs pull` in the repo (or set "
+        "GENE_APP_DATA_DIR to a folder holding the real file) and retry."
+    )
 if not dl.matrix_exists():
     raise SystemExit(
         f"Gene expression matrix not found at {dl.MATRIX_REINDEXED_PATH}.\n"
@@ -49,13 +59,15 @@ cluster_colors = dl.load_cluster_colors()
 tissue_options = gp.all_tissue_names(tissue_index)
 cell_annotation_colors = dl.load_cell_annotation_colors()
 
+# Case-insensitive gene lookup: lowercased name -> matrix column name
+gene_lookup = {}
+for _g in gene_matrix.columns:
+    gene_lookup.setdefault(_g.lower(), _g)
+
 
 def _cluster_size(nid):
     """Number of cells in a cluster node."""
     return len(gp.get_cluster_node_cell_ids(tree=tree, node=nid))
-
-
-
 
 
 def _compact_number(x, pos=None):
@@ -71,6 +83,13 @@ def _compact_number(x, pos=None):
         return f"{int(x)}"
     return f"{x:g}"
 
+
+def _pin_axes_position(fig):
+    """Stop @render.plot from applying tight_layout, which it does to any
+    figure without a layout engine and which would override the fixed
+    set_position rectangles that keep the stacked plots aligned."""
+    fig.set_layout_engine(PlaceHolderLayoutEngine(adjust_compatible=True,
+                                                  colorbar_gridspec=False))
 
 
 # ---------------------------------------------------------------------------
@@ -95,19 +114,19 @@ def plot_annotation_strip_matplotlib(gene_matrix, cell_colors, offset=0):
     fig, ax = plt.subplots(figsize=(8, 0.3), dpi=150)
     default_color = "#eeeeee"
 
-    # Draw color bars and detect where the annotation color changes
-    boundaries = [0]
-    prev_color = None
-    for i, cell in enumerate(cells):
-        color = cell_colors.get(cell, default_color)
-        ax.axvspan(i - 0.5, i + 0.5, facecolor=color, alpha=0.9, lw=0)
-        if i > 0 and color != prev_color:
-            boundaries.append(i)
-        prev_color = color
+    # One RGBA pixel per cell, drawn as a single image (one patch per cell
+    # is far too slow over the full ~4.5k-cell range)
+    rgba = np.array([to_rgba(cell_colors.get(cell, default_color)) for cell in cells])
+    ax.imshow(rgba[np.newaxis, :, :], aspect="auto", interpolation="nearest",
+              extent=(-0.5, n - 0.5, 0, 1), alpha=0.9)
+
+    # Positions where the annotation color changes
+    changes = np.flatnonzero(np.any(rgba[1:] != rgba[:-1], axis=1)) + 1
+    boundaries = [0] + changes.tolist()
 
     # Vertical dividers at cluster boundaries (skip 0 since it's the left edge)
-    for b in boundaries[1:]:
-        ax.axvline(x=b - 0.5, color="black", linewidth=0.4, alpha=0.7)
+    if len(changes):
+        ax.vlines(changes - 0.5, 0, 1, color="black", linewidth=0.4, alpha=0.7)
 
     # Cell-index labels above the strip; thin out if there are too many
     label_positions = list(boundaries)
@@ -138,6 +157,7 @@ def plot_annotation_strip_matplotlib(gene_matrix, cell_colors, offset=0):
     ax.patch.set_alpha(0)
     # Exact axes rectangle: identical [left, width] as the gene plot below.
     ax.set_position([0.10, 0.10, 0.88, 0.55])
+    _pin_axes_position(fig)
     return fig
 
 
@@ -188,15 +208,16 @@ def plot_gene_across_all_cells_matplotlib(gene, gene_matrix, highlight_cells,
     # room at top for the title). set_position pins the rectangle so wide
     # y-tick labels can't shift the y-axis around.
     ax.set_position([0.10, 0.10, 0.88, 0.72])
+    _pin_axes_position(fig)
     return fig
 
 
-def plot_cell_content_plotly(node, gene_matrix, tree, template, cluster_names,
+def plot_cell_content_plotly(node, gene_matrix, tree, template,
                              gene_color_map, genes_to_show):
     """Interactive plotly version of gp.plot_cell_content.
 
     Dendrogram on the left, colored gene contributions per cell on the right.
-    Highlighted genes overlay a single gray "other genes" background at their
+    Highlighted genes overlay a single white background bar per cell at their
     true cumulative x-positions (matches matplotlib's `pos += val` layout).
     Trace count = n_highlighted_genes + 2.
     """
@@ -237,13 +258,13 @@ def plot_cell_content_plotly(node, gene_matrix, tree, template, cluster_names,
     y_pos = list(range(n_cells))
     threshold_pct = 0.1
 
-    # Gray background (0..100 per cell)
+    # White background (0..100 per cell) standing in for all other genes
     fig.add_trace(go.Bar(
         x=[100] * n_cells, y=y_pos, orientation="h",
         marker=dict(color="#ffffff", line=dict(width=0)),
         name="other genes",
         hoverinfo="skip",
-        showlegend=True,
+        showlegend=False,
     ), row=1, col=2)
 
     def to_rgb(c):
@@ -265,7 +286,7 @@ def plot_cell_content_plotly(node, gene_matrix, tree, template, cluster_names,
         hover_text = [
             f"<b>{gene}</b><br>Contribution: {v:.2f}%"
             if vis else None
-            for c, v, vis in zip(ordered_cells, vals, visible_per_cell)
+            for v, vis in zip(vals, visible_per_cell)
         ]
         fig.add_trace(go.Bar(
             x=vals,
@@ -318,9 +339,11 @@ explorer_sidebar = ui.sidebar(
     ),
     ui.panel_conditional(
         "input.search_mode == 'Gene'",
+        # update_on="blur": search on Enter / leaving the field, not per keystroke
         ui.input_text(
             "gene_query", "Gene name:",
             placeholder="e.g. nspc-20 or F40F8.4",
+            update_on="blur",
         ),
     ),
     ui.panel_conditional(
@@ -364,23 +387,36 @@ app_ui = ui.page_navbar(
         # window.HCC_plotted_genes when drawing its Plot column cells, so
         # any server-side change (add-gene input, clear button, new query)
         # needs to update that set and repaint the grid.
+        # window.HCC_pinned_genes holds the queried / reference genes, which
+        # already have their own plots and get no Plot button.
         ui.tags.script("""
-            document.addEventListener('DOMContentLoaded', function() {
-                if (!window.Shiny) return;
+            window.HCC_plotted_genes = window.HCC_plotted_genes || new Set();
+            window.HCC_pinned_genes = window.HCC_pinned_genes || new Set();
+            $(document).on('shiny:connected', function() {
                 Shiny.addCustomMessageHandler('plotted_genes_updated', function(msg) {
                     window.HCC_plotted_genes = new Set(msg.genes || []);
-                    if (window.HCC_grid_api) {
+                    window.HCC_pinned_genes = new Set(msg.pinned || []);
+                    var api = window.HCC_grid_api;
+                    if (api) {
                         // refreshCells re-invokes the button cellRenderer;
                         // redrawRows re-invokes getRowStyle for backgrounds.
-                        if (window.HCC_grid_api.refreshCells) {
-                            window.HCC_grid_api.refreshCells({force: true});
-                        }
-                        if (window.HCC_grid_api.redrawRows) {
-                            window.HCC_grid_api.redrawRows();
-                        }
+                        api.refreshCells({force: true});
+                        api.redrawRows();
                     }
                 });
             });
+            // Fold / unfold the gene table without a server round trip, so
+            // the grid and the inputs next to it keep their state.
+            window.HCC_toggleTable = function(btn) {
+                var left = document.getElementById('hcc_table_col');
+                var right = document.getElementById('hcc_plots_col');
+                var hide = !left.classList.contains('d-none');
+                left.classList.toggle('d-none', hide);
+                right.classList.toggle('col-lg-7', !hide);
+                right.classList.toggle('col-lg-12', hide);
+                btn.innerText = hide ? '▶ Show table' : '◀ Hide table';
+                window.dispatchEvent(new Event('resize'));
+            };
         """),
     ),
     title="HCC Explorer",
@@ -399,25 +435,39 @@ def server(input: Inputs, output: Outputs, session: Session):
     navigation_override = reactive.value(None)
     plotted_genes = reactive.value([])                              # gene table "Plot" button state
     add_gene_error_msg = reactive.value(None)                       # inline error under add-gene input
-    table_collapsed = reactive.value(False)                         # left-column fold state
+    # Whether a cluster is resolved. The context tab layout depends only on
+    # this (Value.set is a no-op when unchanged), so navigating between
+    # clusters doesn't rebuild the inputs and grid on that tab.
+    has_cluster = reactive.value(False)
+    # What the spectrum tab shows: None, "plot", or ("too_large", n_cells).
+    # Same idea: re-creating the widget container on every cluster change
+    # races with the widget render ("No model found" in the browser).
+    spectrum_mode = reactive.value(None)
+    # Gene shown in each extra-plot slot (and whether the slot is in use), so
+    # adding or removing a gene only re-renders the slots that changed
+    slot_genes = [reactive.value(None) for _ in range(MAX_EXTRA_GENES)]
+    slot_filled = [reactive.value(False) for _ in range(MAX_EXTRA_GENES)]
 
-    @reactive.effect
-    @reactive.event(input.toggle_table)
-    def _on_toggle_table():
-        table_collapsed.set(not table_collapsed.get())
+    def _optional(read, default=None):
+        """Read an input that may not be rendered yet. The dependency is still
+        registered, so the caller re-runs once the input appears."""
+        try:
+            return read()
+        except SilentException:
+            return default
 
     @reactive.effect
     def _reset_override_on_query():
         input.search_mode()
         input.gene_query()
         input.tissue_query()
-        try:
-            input.cluster_choice()
-        except Exception:
-            pass
+        _optional(input.cluster_choice)
         navigation_override.set(None)
         plotted_genes.set([])                                        # clear on new query too
         add_gene_error_msg.set(None)
+        # New query -> full cell range (navigating within a query keeps it)
+        ui.update_numeric("range_start", value=0)
+        ui.update_numeric("range_end", value=len(gene_matrix.index) - 1)
 
     @reactive.effect
     @reactive.event(input.plot_gene_click, ignore_none=True)
@@ -439,12 +489,10 @@ def server(input: Inputs, output: Outputs, session: Session):
         if not gene:
             add_gene_error_msg.set(None)
             return
-        # Case-insensitive lookup against the expression matrix
-        matches = [c for c in gene_matrix.columns if c.lower() == gene.lower()]
-        if not matches:
+        canonical = gene_lookup.get(gene.lower())
+        if canonical is None:
             add_gene_error_msg.set(f"'{gene}' not found in the expression matrix.")
             return
-        canonical = matches[0]
         current = plotted_genes.get()
         if canonical in current:
             # Toggle off if already plotted
@@ -461,21 +509,44 @@ def server(input: Inputs, output: Outputs, session: Session):
         add_gene_error_msg.set(None)
 
     @reactive.effect
-    def _sync_plotted_genes_to_client():
+    async def _sync_plotted_genes_to_client():
         """Push the current plotted_genes list to the browser so the Ag-Grid
         button cells reflect any server-side change (add-gene input, clear
         button, new-query reset). No-op on the roundtrip when the client
         already made the change itself -- the message just confirms.
+        Also sends the queried / reference genes, which get no Plot button.
         """
         genes = list(plotted_genes.get())
-        session.send_custom_message("plotted_genes_updated", {"genes": genes})
+        ctx = cluster_ctx()
+        pinned = [] if ctx is None else [g for g in (ctx["gene"], ctx["ref_gene"]) if g]
+        await session.send_custom_message(
+            "plotted_genes_updated", {"genes": genes, "pinned": pinned},
+        )
+
+    @reactive.effect
+    def _sync_has_cluster():
+        ctx = cluster_ctx()
+        has_cluster.set(ctx is not None)
+        if ctx is None:
+            spectrum_mode.set(None)
+        elif ctx["too_large"]:
+            spectrum_mode.set(("too_large", len(ctx["cluster_cells"])))
+        else:
+            spectrum_mode.set("plot")
+
+    @reactive.effect
+    def _sync_slot_genes():
+        genes = selected_extra_genes()
+        for i in range(MAX_EXTRA_GENES):
+            slot_genes[i].set(genes[i] if i < len(genes) else None)
+            slot_filled[i].set(i < len(genes))
 
     @reactive.effect
     @reactive.event(input.range_reset)
     def _on_range_reset():
         n = len(gene_matrix.index)
-        session.send_input_message("range_start", {"value": 0})
-        session.send_input_message("range_end", {"value": n - 1})
+        ui.update_numeric("range_start", value=0)
+        ui.update_numeric("range_end", value=n - 1)
 
     @reactive.effect
     @reactive.event(input.zoom_to_cluster_btn)
@@ -489,8 +560,8 @@ def server(input: Inputs, output: Outputs, session: Session):
         positions = [pos_by_cell[c] for c in ctx["cluster_cells"] if c in pos_by_cell]
         if not positions:
             return
-        session.send_input_message("range_start", {"value": min(positions)})
-        session.send_input_message("range_end", {"value": max(positions)})
+        ui.update_numeric("range_start", value=min(positions))
+        ui.update_numeric("range_end", value=max(positions))
 
     @reactive.effect
     @reactive.event(input.nav_parent, ignore_none=True)
@@ -551,7 +622,7 @@ def server(input: Inputs, output: Outputs, session: Session):
             label = f"[{node}] cluster {ref_gene} – {suffix}"
             entries.append((label, node, tissue, ref_gene))
         entries.sort(key=lambda e: (
-            query.lower() != e[2],
+            query.lower() != e[2].lower(),
             -_cluster_size(e[1]),
             e[1],
         ))
@@ -570,11 +641,13 @@ def server(input: Inputs, output: Outputs, session: Session):
     @reactive.calc
     def resolved():
         if input.search_mode() == "Gene":
-            query = (input.gene_query() or "").strip()
-            if not query:
+            raw_query = (input.gene_query() or "").strip()
+            if not raw_query:
                 return None
-            if query not in gene_matrix.columns:
-                return {"error": f"'{query}' wasn't found as a gene in the expression matrix."}
+            # Case-insensitive, like the add-gene box; use the matrix's spelling
+            query = gene_lookup.get(raw_query.lower())
+            if query is None:
+                return {"error": f"'{raw_query}' wasn't found as a gene in the expression matrix."}
             flared = gp.find_flared_cluster_for_gene(query, template)
             if flared is not None:
                 node = flared
@@ -622,10 +695,7 @@ def server(input: Inputs, output: Outputs, session: Session):
         if len(entries) == 1:
             _, node, tissue, gene = entries[0]
         else:
-            try:
-                choice = input.cluster_choice()
-            except Exception:
-                choice = entries[0][0]
+            choice = _optional(input.cluster_choice, entries[0][0])
             _, node, tissue, gene = next(
                 (e for e in entries if e[0] == choice), entries[0]
             )
@@ -656,24 +726,22 @@ def server(input: Inputs, output: Outputs, session: Session):
             "cluster_cells": cluster_cells,
             "cluster_color": cluster_color,
             "ref_gene": ref_gene,
+            # A gene query can land on a big cluster directly (not via the
+            # nav buttons); those are too costly for the spectrum plot.
+            "too_large": len(cluster_cells) > MAX_NAV_CELLS,
         }
 
     @reactive.calc
     def context_matrix():
-        ctx = cluster_ctx()
-        if ctx is None:
-            return gene_matrix
         # Range inputs drive everything now — zoom-to-cluster is a shortcut
-        # button that sets these values, not a separate state.
+        # button that sets these values, not a separate state. Deliberately
+        # independent of cluster_ctx: navigating doesn't change the range.
         n = len(gene_matrix.index)
-        try:
-            start = int(input.range_start() or 0)
-        except Exception:
-            start = 0
-        try:
-            end = int(input.range_end() or n - 1)
-        except Exception:
-            end = n - 1
+        start = _optional(input.range_start)
+        end = _optional(input.range_end)
+        # Empty numeric inputs read as None
+        start = 0 if start is None else int(start)
+        end = n - 1 if end is None else int(end)
         start = max(0, start)
         end = min(n - 1, end)
         if end < start:
@@ -733,7 +801,8 @@ def server(input: Inputs, output: Outputs, session: Session):
 
         def row(label, value):
             return ui.div(
-                ui.span(f"{label}: ", class_="text-muted"),
+                # me-1: flex layout drops the trailing space after the colon
+                ui.span(f"{label}:", class_="text-muted me-1"),
                 value,
                 class_="mb-1 d-flex align-items-center",
             )
@@ -860,12 +929,16 @@ def server(input: Inputs, output: Outputs, session: Session):
     @reactive.calc
     def spectrum_inputs():
         ctx = cluster_ctx()
-        if ctx is None:
+        if ctx is None or ctx["too_large"]:
             return None
-        qualifying, gene_colors = gp.compute_high_expression_genes_in_cluster(
-            gene_matrix=gene_matrix, tree=tree, cluster_node=ctx["node"],
-            threshold_pct=input.threshold(), min_cells=1,
-        )
+        try:
+            qualifying, gene_colors = gp.compute_high_expression_genes_in_cluster(
+                gene_matrix=gene_matrix, tree=tree, cluster_node=ctx["node"],
+                threshold_pct=input.threshold(), min_cells=1,
+            )
+        except ValueError:
+            # Node has no cells in the expression matrix
+            return None
         gene_color_map = dict(gene_colors)
         if ctx["gene"] not in gene_color_map:
             gene_color_map[ctx["gene"]] = (0.85, 0.1, 0.1, 1.0)
@@ -878,8 +951,16 @@ def server(input: Inputs, output: Outputs, session: Session):
 
     @render.ui
     def spectrum_section():
-        if cluster_ctx() is None:
+        mode = spectrum_mode.get()
+        if mode is None:
             return None
+        if mode != "plot":
+            return ui.div(
+                f"This cluster has {mode[1]} cells, too many to "
+                f"draw the spectrum (limit: {MAX_NAV_CELLS}). Use the children "
+                "buttons in the sidebar to move to a smaller cluster.",
+                class_="alert alert-info",
+            )
         return output_widget("spectrum_plot")
 
     @render_widget
@@ -889,7 +970,7 @@ def server(input: Inputs, output: Outputs, session: Session):
             return None
         return plot_cell_content_plotly(
             node=d["ctx"]["node"], gene_matrix=gene_matrix, tree=tree,
-            template=template, cluster_names=cluster_names,
+            template=template,
             gene_color_map=d["gene_color_map"],
             genes_to_show=d["genes_to_show"],
         )
@@ -898,10 +979,10 @@ def server(input: Inputs, output: Outputs, session: Session):
 
     @render.ui
     def context_section():
-        ctx = cluster_ctx()
-        if ctx is None:
+        # Depends only on has_cluster, not cluster_ctx: navigating keeps the
+        # range, the sub-cluster switch, the add-gene text and the grid.
+        if not has_cluster.get():
             return None
-        n_cells = len(ctx["cluster_cells"])
         n_total = len(gene_matrix.index)
         extra_slots = [
             ui.output_ui(f"extra_slot_{i}") for i in range(MAX_EXTRA_GENES)
@@ -952,11 +1033,7 @@ def server(input: Inputs, output: Outputs, session: Session):
                     min=0, max=n_total - 1, step=1, width="110px",
                 ),
                 ui.span("or", class_="mx-2 text-muted"),
-                ui.input_action_button(
-                    "zoom_to_cluster_btn",
-                    f"Zoom on cluster cells ({n_cells})",
-                    class_="btn btn-sm btn-outline-primary",
-                ),
+                ui.output_ui("zoom_btn_ui", inline=True),
                 class_="d-flex align-items-center flex-wrap mb-2",
             ),
             ui.input_action_button(
@@ -971,46 +1048,38 @@ def server(input: Inputs, output: Outputs, session: Session):
             *extra_slots,
         )
 
-        collapsed = table_collapsed.get()
-        toggle_label = "▶ Show table" if collapsed else "◀ Hide table"
-        toggle_btn = ui.input_action_button(
-            "toggle_table",
-            toggle_label,
+        # Folding is done client-side (window.HCC_toggleTable) so nothing
+        # here is re-rendered and the grid keeps its state.
+        toggle_btn = ui.tags.button(
+            "◀ Hide table",
+            type="button",
             class_="btn btn-sm btn-outline-secondary mb-2",
+            onclick="HCC_toggleTable(this)",
         )
-        right_wrapped = ui.div(toggle_btn, right_column)
 
-        if collapsed:
-            # Full-width right column; Ag-Grid state persists in window globals
-            # across the re-render on unfold.
-            return right_wrapped
-
-        return ui.layout_columns(
-            left_column,
-            right_wrapped,
-            col_widths=(5, 7),
-            gap="1rem",
+        return ui.div(
+            ui.div(left_column, id="hcc_table_col", class_="col-12 col-lg-5"),
+            ui.div(toggle_btn, right_column, id="hcc_plots_col",
+                   class_="col-12 col-lg-7"),
+            class_="row g-3",
         )
 
     @render.ui
-    def ref_gene_label():
+    def zoom_btn_ui():
         ctx = cluster_ctx()
-        if ctx is None or ctx["ref_gene"] is None:
+        if ctx is None:
             return None
-        if ctx["ref_gene"] == ctx["gene"]:
-            return ui.p(
-                "Selected gene is the reference gene",
-                class_="text-muted small mb-1 mt-2",
-            )
-        return ui.h6(
-            "Reference gene",
-            class_="text-muted text-uppercase small mb-1 mt-2",
+        # Re-created per cluster so the label shows its size; a fresh button
+        # starts at 0, which reactive.event ignores.
+        return ui.input_action_button(
+            "zoom_to_cluster_btn",
+            f"Zoom on cluster cells ({len(ctx['cluster_cells'])})",
+            class_="btn btn-sm btn-outline-primary",
         )
-
 
     @render.plot
     def annotation_strip_plot():
-        if cluster_ctx() is None or not cell_annotation_colors:
+        if not has_cluster.get() or not cell_annotation_colors:
             return None
         ctx_matrix = context_matrix()
         # Compute the offset = position of the first cell in the sliced
@@ -1037,7 +1106,6 @@ def server(input: Inputs, output: Outputs, session: Session):
         cls = "text-success" if msg.startswith("Removed") else "text-danger"
         return ui.p(msg, class_=f"{cls} small mb-0 mt-1")
 
-
     @render.ui
     def ref_gene_section():
         ctx = cluster_ctx()
@@ -1058,22 +1126,6 @@ def server(input: Inputs, output: Outputs, session: Session):
 
     @render.plot
     def ref_gene_pane():
-        ctx = cluster_ctx()
-        if (ctx is None or ctx["ref_gene"] is None
-                or ctx["ref_gene"] == ctx["gene"]):
-            return None
-        return plot_gene_across_all_cells_matplotlib(
-            ctx["ref_gene"], context_matrix(),
-            highlight_cells=ctx["cluster_cells"],
-            highlight_color=ctx["cluster_color"],
-        )
-
-
-
-
-
-    @render.plot
-    def ref_gene_plot():
         ctx = cluster_ctx()
         if (ctx is None or ctx["ref_gene"] is None
                 or ctx["ref_gene"] == ctx["gene"]):
@@ -1107,9 +1159,10 @@ def server(input: Inputs, output: Outputs, session: Session):
 
     @render.ui
     def additional_genes_header():
-        if not selected_extra_genes():
+        genes = selected_extra_genes()
+        if not genes:
             return None
-        return ui.div(
+        children = [
             ui.h6(
                 "Additional gene(s)",
                 class_="text-muted text-uppercase small mb-0 d-inline me-3",
@@ -1118,8 +1171,13 @@ def server(input: Inputs, output: Outputs, session: Session):
                 "clear_extra_plots", "Clear all",
                 class_="btn btn-sm btn-outline-danger",
             ),
-            class_="mt-3 mb-2 d-flex align-items-center",
-        )
+        ]
+        if len(genes) > MAX_EXTRA_GENES:
+            children.append(ui.span(
+                f"Showing the first {MAX_EXTRA_GENES} of {len(genes)} genes.",
+                class_="text-muted small ms-3",
+            ))
+        return ui.div(*children, class_="mt-3 mb-2 d-flex align-items-center")
 
     # ----- Context tab: annotation table + extra-gene plots ------------------
 
@@ -1167,6 +1225,9 @@ def server(input: Inputs, output: Outputs, session: Session):
         df = gene_table_df()
         if df is None or df.empty:
             return None
+        # Sort / filter / page state is saved per table (cluster + sub-cluster
+        # switch), so one cluster's filter isn't applied to the next one.
+        state_key = json.dumps(f"{cluster_ctx()['node']}:{input.include_subclusters()}")
 
         n = len(df)
         paginate = n > 100
@@ -1174,6 +1235,14 @@ def server(input: Inputs, output: Outputs, session: Session):
         plot_button_fn = (
             "function(params) {"
             "  if (!window.HCC_plotted_genes) window.HCC_plotted_genes = new Set();"
+            "  if (window.HCC_pinned_genes && "
+            "      window.HCC_pinned_genes.has(params.data.gene)) {"
+            "    var note = document.createElement('span');"
+            "    note.innerText = 'shown';"
+            "    note.className = 'text-muted small';"
+            "    note.title = 'Already plotted above as the selected / reference gene';"
+            "    return note;"
+            "  }"
             "  var active = window.HCC_plotted_genes.has(params.data.gene);"
             "  var btn = document.createElement('button');"
             "  btn.innerText = active ? '✓ Plotted' : '📈 Plot';"
@@ -1213,22 +1282,25 @@ def server(input: Inputs, output: Outputs, session: Session):
         )
 
         # ---- Client-side grid state preservation --------------------------
-        # Because gene_table_df changes every time plotted_genes changes (the
-        # _plotted column recomputes), @render_widget destroys and recreates
-        # the whole Ag-Grid widget on every Plot click. Without this, the
-        # user's sort / filter / column-order / current-page state gets wiped
-        # on every click.
+        # @render_widget rebuilds the Ag-Grid widget whenever gene_table_df
+        # changes (new cluster, sub-cluster switch). We stash each table's
+        # sort / filter / column-order / page state in window.HCC_grid_states
+        # under state_key on every state-change event, and restore it in
+        # `onFirstDataRendered` when the same table is built again.
+        # Ag-Grid ignores unknown column IDs in applyColumnState.
         #
-        # We stash the grid's state in a `window` global on every state-change
-        # event, then restore it in `onFirstDataRendered` on the freshly-built
-        # grid. State survives across re-renders in the same browser session.
-        # Ag-Grid ignores unknown column IDs in applyColumnState, so toggling
-        # sub-clusters (which changes the column set) degrades gracefully.
+        # ipyaggrid 0.5 bundles Ag-Grid v25-27, where column state lives on
+        # params.columnApi (later versions moved it onto params.api).
 
         save_state_js = (
             "function(params) {"
-            "  window.HCC_grid_state = {"
-            "    columnState: params.api.getColumnState(),"
+            # Skip events fired while the grid is still initialising, which
+            # would overwrite the saved state with the defaults
+            "  if (window.HCC_grid_api !== params.api) return;"
+            "  var capi = params.columnApi || params.api;"
+            "  window.HCC_grid_states = window.HCC_grid_states || {};"
+            f"  window.HCC_grid_states[{state_key}] = {{"
+            "    columnState: capi.getColumnState(),"
             "    filterModel: params.api.getFilterModel(),"
             "    currentPage: params.api.paginationGetCurrentPage ? "
             "                 params.api.paginationGetCurrentPage() : null"
@@ -1238,21 +1310,21 @@ def server(input: Inputs, output: Outputs, session: Session):
 
         restore_state_js = (
             "function(params) {"
+            "  var capi = params.columnApi || params.api;"
+            f"  var s = (window.HCC_grid_states || {{}})[{state_key}];"
+            "  if (s) {"
+            "    if (s.columnState) {"
+            "      capi.applyColumnState({state: s.columnState, applyOrder: true});"
+            "    }"
+            "    if (s.filterModel) {"
+            "      params.api.setFilterModel(s.filterModel);"
+            "    }"
+            "    if (typeof s.currentPage === 'number' && "
+            "        params.api.paginationGoToPage) {"
+            "      params.api.paginationGoToPage(s.currentPage);"
+            "    }"
+            "  }"
             "  window.HCC_grid_api = params.api;"
-            "  var s = window.HCC_grid_state;"
-            "  if (!s) return;"
-            "  if (s.columnState) {"
-            "    params.api.applyColumnState({"
-            "      state: s.columnState, applyOrder: true"
-            "    });"
-            "  }"
-            "  if (s.filterModel) {"
-            "    params.api.setFilterModel(s.filterModel);"
-            "  }"
-            "  if (typeof s.currentPage === 'number' && "
-            "      params.api.paginationGoToPage) {"
-            "    params.api.paginationGoToPage(s.currentPage);"
-            "  }"
             "}"
         )
 
@@ -1361,16 +1433,15 @@ def server(input: Inputs, output: Outputs, session: Session):
         ctx = cluster_ctx()
         if ctx is None:
             return []
-        cols = context_matrix().columns
         return [g for g in plotted_genes.get()
-                if g not in (ctx["gene"], ctx["ref_gene"]) and g in cols]
+                if g not in (ctx["gene"], ctx["ref_gene"])
+                and g in gene_matrix.columns]
 
     def _register_extra_slot(i: int):
         @output(id=f"extra_slot_{i}")
         @render.ui
         def _slot_ui():
-            genes = selected_extra_genes()
-            if i >= len(genes):
+            if not slot_filled[i].get():
                 return None
             return ui.output_plot(f"extra_plot_{i}", height="200px")
 
@@ -1378,11 +1449,11 @@ def server(input: Inputs, output: Outputs, session: Session):
         @render.plot
         def _slot_plot():
             ctx = cluster_ctx()
-            genes = selected_extra_genes()
-            if ctx is None or i >= len(genes):
+            gene = slot_genes[i].get()
+            if ctx is None or gene is None:
                 return None
             return plot_gene_across_all_cells_matplotlib(
-                genes[i], context_matrix(),
+                gene, context_matrix(),
                 highlight_cells=ctx["cluster_cells"],
                 highlight_color=ctx["cluster_color"],
             )
