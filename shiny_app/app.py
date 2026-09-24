@@ -5,8 +5,11 @@ Two-page navbar (spectrum + context), plotly-based interactive spectrum
 figure with dendrogram, and hierarchy navigation (parent / children).
 """
 
+import asyncio
 import json
 import re
+from functools import lru_cache
+from urllib.parse import parse_qs, urlencode
 
 import networkx as nx
 import numpy as np
@@ -27,6 +30,8 @@ import gene_plots as gp
 
 MAX_EXTRA_GENES = 20  # pre-registered extra-plot output slots
 MAX_NAV_CELLS = 1000  # clusters larger than this aren't navigable and get no spectrum plot
+SPECTRUM_TAB = "Cells associated with this gene"
+CONTEXT_TAB = "Gene expression across all cells"
 
 
 # ---------------------------------------------------------------------------
@@ -58,6 +63,8 @@ cluster_colors = dl.load_cluster_colors()
 
 tissue_options = gp.all_tissue_names(tissue_index)
 cell_annotation_colors = dl.load_cell_annotation_colors()
+cell_annotation_labels = dl.load_cell_annotation_labels()
+cell_color_keys = {c: dl.rgba_key(col) for c, col in cell_annotation_colors.items()}
 
 # Case-insensitive gene lookup: lowercased name -> matrix column name
 gene_lookup = {}
@@ -65,9 +72,56 @@ for _g in gene_matrix.columns:
     gene_lookup.setdefault(_g.lower(), _g)
 
 
+# Leading "" keeps the autocomplete empty until a gene is picked (a single
+# selectize otherwise auto-selects its first choice)
+all_genes = [""] + sorted(gene_matrix.columns, key=str.lower)
+tissue_lookup = {t.lower(): t for t in tissue_options}
+ROOT_NODE = next(n for n in tree.nodes if tree.in_degree(n) == 0)
+
+# Clickable examples on the empty start page
+EXAMPLE_GENES = [g for g in ("nspc-20", "hsp-4", "let-858") if g in gene_matrix.columns]
+
+# Reference gene per annotated node (highest mean expression), for labels
+_ref_gene_by_node = (
+    annotation_df.loc[annotation_df.groupby("node")["mean_expression"].idxmax()]
+    .set_index("node")["gene_name"].to_dict()
+    if not annotation_df.empty else {}
+)
+
+# How strongly the shown gene is tied to the shown cluster
+# (gp.association_quality status -> badge label, bootstrap color, tooltip)
+ASSOCIATION_BADGES = {
+    "established": ("Established marker", "success",
+                    "This gene is the designated marker gene of this cluster."),
+    "curated": ("Curated", "primary",
+                "This gene was used to annotate this cluster."),
+    "predicted": ("Predicted", "warning",
+                  "Correlated with this cluster, but not used to annotate it."),
+    "not_found": ("No annotation", "secondary",
+                  "No curated annotation links this gene to this cluster."),
+}
+
+
 def _cluster_size(nid):
     """Number of cells in a cluster node."""
     return len(gp.get_cluster_node_cell_ids(tree=tree, node=nid))
+
+
+@lru_cache(maxsize=None)
+def _top_expressed_gene(nid):
+    gene, _ = gp.most_expressed_gene_in_cluster(nid, gene_matrix, tree)
+    return gene
+
+
+def node_label(nid):
+    """Short cluster label such as "[102] hsp-4". The gene comes from the
+    cluster name, else the node's reference gene, else its most expressed
+    gene, so unnamed nodes still get something recognisable."""
+    match = re.match(r"\[(\d+)\]\s*cluster\s+(\S+)", cluster_names.get(nid, ""))
+    if match:
+        return f"[{match.group(1)}] {match.group(2)}"
+    gene = _ref_gene_by_node.get(nid) or _top_expressed_gene(nid)
+    return f"[{nid}] {gene}" if gene else f"[{nid}]"
 
 
 def _compact_number(x, pos=None):
@@ -128,17 +182,17 @@ def plot_annotation_strip_matplotlib(gene_matrix, cell_colors, offset=0):
     if len(changes):
         ax.vlines(changes - 0.5, 0, 1, color="black", linewidth=0.4, alpha=0.7)
 
-    # Cell-index labels above the strip; thin out if there are too many
-    label_positions = list(boundaries)
-    if (n - 1) not in label_positions:
-        label_positions.append(n - 1)
-    max_labels = 20
-    if len(label_positions) > max_labels:
-        step = max(1, len(label_positions) // max_labels)
-        thinned = label_positions[::step]
-        if (n - 1) not in thinned:
-            thinned.append(n - 1)
-        label_positions = thinned
+    # Cell-index labels above the strip, at least ~1/25 of the width apart so
+    # they don't overlap. The last cell is always labelled, so labels too
+    # close before it are dropped instead.
+    min_gap = max(1, n / 25)
+    label_positions = []
+    for pos in boundaries:
+        if not label_positions or pos - label_positions[-1] >= min_gap:
+            label_positions.append(pos)
+    while label_positions and (n - 1) - label_positions[-1] < min_gap:
+        label_positions.pop()
+    label_positions.append(n - 1)
     for pos in label_positions:
         ax.text(
             pos, 1.05, str(pos + offset),
@@ -328,9 +382,43 @@ def plot_cell_content_plotly(node, gene_matrix, tree, template,
     return fig
 
 
+def build_spectrum_figure(node, gene, threshold_pct):
+    """Spectrum figure for one cluster: genes above `threshold_pct` in any
+    cell, plus the queried gene. Pure function of its arguments (reads only
+    the process-wide data), so it can run in a worker thread."""
+    try:
+        qualifying, gene_colors = gp.compute_high_expression_genes_in_cluster(
+            gene_matrix=gene_matrix, tree=tree, cluster_node=node,
+            threshold_pct=threshold_pct, min_cells=1,
+        )
+    except ValueError:
+        # Node has no cells in the expression matrix
+        return None
+    gene_color_map = dict(gene_colors)
+    if gene not in gene_color_map:
+        gene_color_map[gene] = (0.85, 0.1, 0.1, 1.0)
+    genes_to_show = list(set(qualifying.index.tolist()) | {gene})
+    return plot_cell_content_plotly(
+        node=node, gene_matrix=gene_matrix, tree=tree, template=template,
+        gene_color_map=gene_color_map, genes_to_show=genes_to_show,
+    )
+
+
 # ---------------------------------------------------------------------------
 # UI
 # ---------------------------------------------------------------------------
+
+# A single selectize ignores typing while it holds a value, so users had to
+# delete the current gene first (which also blanked the view). Instead, clear
+# it silently on focus (Shiny isn't notified) and put it back on blur if
+# nothing new was picked.
+SELECTIZE_TYPE_TO_REPLACE = {
+    "onFocus": ui.js_eval(
+        "function() { this._hccPrev = this.getValue(); this.clear(true); }"),
+    "onBlur": ui.js_eval(
+        "function() { if (!this.getValue() && this._hccPrev) {"
+        " this.setValue(this._hccPrev, true); } }"),
+}
 
 explorer_sidebar = ui.sidebar(
     ui.input_radio_buttons(
@@ -339,11 +427,14 @@ explorer_sidebar = ui.sidebar(
     ),
     ui.panel_conditional(
         "input.search_mode == 'Gene'",
-        # update_on="blur": search on Enter / leaving the field, not per keystroke
-        ui.input_text(
+        # Autocomplete over every gene in the matrix. The ~20k choices are
+        # sent server-side (ui.update_selectize(server=True) in the server),
+        # so only matches for what's typed reach the browser.
+        ui.input_selectize(
             "gene_query", "Gene name:",
-            placeholder="e.g. nspc-20 or F40F8.4",
-            update_on="blur",
+            choices=[],
+            options={"placeholder": "Start typing, e.g. nspc-20",
+                     "maxOptions": 50, **SELECTIZE_TYPE_TO_REPLACE},
         ),
     ),
     ui.panel_conditional(
@@ -352,11 +443,13 @@ explorer_sidebar = ui.sidebar(
             "tissue_query", "Tissue / cell-type:",
             choices=[""] + list(tissue_options),
             selected="",
+            options={"placeholder": "Start typing, e.g. excretory",
+                     **SELECTIZE_TYPE_TO_REPLACE},
         ),
     ),
     ui.output_ui("cluster_picker_ui"),
     ui.panel_conditional(
-        "input.page === 'Cells associated with this gene'",
+        f"input.page === '{SPECTRUM_TAB}'",
         ui.input_slider(
             "threshold", "Threshold (%)",
             min=0.1, max=2.0, value=2.0, step=0.1,
@@ -368,12 +461,12 @@ explorer_sidebar = ui.sidebar(
 )
 
 spectrum_page = ui.nav_panel(
-    "Cells associated with this gene",
+    SPECTRUM_TAB,
     ui.output_ui("spectrum_section"),
 )
 
 context_page = ui.nav_panel(
-    "Gene expression across all cells",
+    CONTEXT_TAB,
     ui.output_ui("context_section"),
 )
 
@@ -382,7 +475,29 @@ app_ui = ui.page_navbar(
     context_page,
     sidebar=explorer_sidebar,
     header=ui.TagList(
-        ui.card(ui.output_ui("results_header"), class_="mb-4"),
+        # Spinners / pulse on outputs while they recompute
+        ui.busy_indicators.use(),
+        ui.tags.style("""
+            /* Note over the spectrum while it's recomputed. The widget output
+               gets no 'recalculating' class, so this is driven by the
+               'spectrum_pending' message and cleared when the plot arrives. */
+            #spectrum_section.hcc-pending::before {
+                content: attr(data-pending-msg);
+                display: block; width: fit-content; margin: 0 auto .5rem;
+                background: var(--bs-body-bg); color: var(--bs-secondary-color);
+                border: 1px solid var(--bs-border-color);
+                padding: .25rem .75rem; border-radius: .25rem; font-size: .9rem;
+            }
+            #spectrum_section.hcc-pending .shiny-ipywidget-output { opacity: .35; }
+            .hcc-results { font-size: .95rem; }
+            .hcc-results details summary { cursor: pointer; }
+            .hcc-crumbs .btn-link { padding: 0 .15rem; font-size: .85rem; }
+            .hcc-legend-swatch {
+                display: inline-block; width: .8rem; height: .8rem;
+                border-radius: 2px; margin-right: .3rem; vertical-align: -1px;
+            }
+        """),
+        ui.card(ui.output_ui("results_header"), class_="mb-3 hcc-results"),
         # Server → client sync for Plot-button state. The grid reads
         # window.HCC_plotted_genes when drawing its Plot column cells, so
         # any server-side change (add-gene input, clear button, new query)
@@ -390,6 +505,11 @@ app_ui = ui.page_navbar(
         # window.HCC_pinned_genes holds the queried / reference genes, which
         # already have their own plots and get no Plot button.
         ui.tags.script("""
+            // The widget JS is loaded through RequireJS, which gives up after
+            // 7 s by default; don't let a slow first load break the plots.
+            if (window.require && window.require.config) {
+                window.require.config({waitSeconds: 120});
+            }
             window.HCC_plotted_genes = window.HCC_plotted_genes || new Set();
             window.HCC_pinned_genes = window.HCC_pinned_genes || new Set();
             $(document).on('shiny:connected', function() {
@@ -405,6 +525,45 @@ app_ui = ui.page_navbar(
                     }
                 });
             });
+            $(document).on('shiny:connected', function() {
+                // Keep the address bar in sync with the current view so it
+                // can be bookmarked or shared (read back on page load).
+                Shiny.addCustomMessageHandler('set_url', function(msg) {
+                    var url = location.pathname + (msg.search ? '?' + msg.search : '');
+                    if (url !== location.pathname + location.search) {
+                        history.replaceState(null, '', url);
+                    }
+                });
+                Shiny.addCustomMessageHandler('spectrum_pending', function(msg) {
+                    var el = document.getElementById('spectrum_section');
+                    el.dataset.pendingMsg = msg.text;
+                    el.classList.add('hcc-pending');
+                });
+            });
+            $(document).on('shiny:value shiny:error', function(e) {
+                if (e.name === 'spectrum_plot') {
+                    document.getElementById('spectrum_section').classList.remove('hcc-pending');
+                }
+            });
+            window.HCC_copyLink = function(btn) {
+                navigator.clipboard.writeText(location.href).then(function() {
+                    var old = btn.innerText;
+                    btn.innerText = '✓ Link copied';
+                    setTimeout(function() { btn.innerText = old; }, 1500);
+                });
+            };
+            // Sidebar breadcrumbs and start-page examples
+            window.HCC_navTo = function(node) {
+                Shiny.setInputValue('nav_to', node, {priority: 'event'});
+            };
+            // Select the example straight in the gene autocomplete; asking the
+            // server to re-send the ~20k choices would blank the box first.
+            window.HCC_example = function(gene) {
+                $('#search_mode input[value=Gene]').prop('checked', true).trigger('change');
+                var sel = $('#gene_query')[0].selectize;
+                sel.addOption({value: gene, label: gene});
+                sel.setValue(gene);
+            };
             // Fold / unfold the gene table without a server round trip, so
             // the grid and the inputs next to it keep their state.
             window.HCC_toggleTable = function(btn) {
@@ -456,12 +615,54 @@ def server(input: Inputs, output: Outputs, session: Session):
         except SilentException:
             return default
 
-    @reactive.effect
+    # Effect priorities: effects that change reactive state run before the
+    # outputs (priority 0), highest first: _init_session 40 > query reset 30 >
+    # pending URL node 25 > click handlers 20 > derived values 10. Otherwise an
+    # output can render, then be invalidated again later in the same flush;
+    # the server then sends the stale value and the browser's Shiny rejects
+    # it ("unexpected state of 'invalidated'"), dropping the rest of that
+    # update (e.g. the range reset).
+
+    # Cluster to navigate to once the restored query resolves (shared URL)
+    pending_node = reactive.value(None)
+
+    @reactive.effect(priority=40)
+    def _init_session():
+        """Fill the gene autocomplete and restore a shared view from the URL
+        (?gene=… or ?tissue=…, plus &node=… and &tab=context). Runs once:
+        the URL is read in isolation, so nothing re-triggers this."""
+        with reactive.isolate():
+            params = parse_qs((session.clientdata.url_search() or "").lstrip("?"))
+        gene = gene_lookup.get((params.get("gene") or [""])[0].strip().lower())
+        tissue = tissue_lookup.get((params.get("tissue") or [""])[0].strip().lower())
+        ui.update_selectize("gene_query", choices=all_genes, selected=gene or "",
+                            server=True)
+        if gene is None and tissue is not None:
+            ui.update_radio_buttons("search_mode", selected="Tissue")
+            ui.update_selectize("tissue_query", selected=tissue)
+        if gene is None and tissue is None:
+            return
+        try:
+            node = int((params.get("node") or [""])[0])
+        except ValueError:
+            node = None
+        if node is not None and node in tree.nodes:
+            pending_node.set(node)
+        if (params.get("tab") or [""])[0] == "context":
+            ui.update_navset("page", selected=CONTEXT_TAB)
+
+    last_query = {"key": None}
+
+    @reactive.effect(priority=30)
     def _reset_override_on_query():
-        input.search_mode()
-        input.gene_query()
-        input.tissue_query()
-        _optional(input.cluster_choice)
+        key = (input.search_mode(), input.gene_query(), input.tissue_query(),
+               _optional(input.cluster_choice))
+        prev, last_query["key"] = last_query["key"], key
+        # The cluster picker appearing (choice None -> its first label) always
+        # follows a tissue change that already reset everything; skipping it
+        # keeps a node restored from a shared URL.
+        if prev is not None and prev[:3] == key[:3] and prev[3] is None:
+            return
         navigation_override.set(None)
         plotted_genes.set([])                                        # clear on new query too
         add_gene_error_msg.set(None)
@@ -469,7 +670,60 @@ def server(input: Inputs, output: Outputs, session: Session):
         ui.update_numeric("range_start", value=0)
         ui.update_numeric("range_end", value=len(gene_matrix.index) - 1)
 
+    @reactive.effect(priority=25)
+    def _apply_pending_node():
+        node = pending_node.get()
+        r = resolved()
+        if node is None or r is None:
+            return
+        pending_node.set(None)
+        if "error" in r or node == r["node"]:
+            return
+        if input.search_mode() == "Tissue":
+            # One of the tissue's own clusters: select it in the picker too
+            entry = next((e for e in tissue_entries() if e[1] == node), None)
+            if entry is not None:
+                ui.update_select("cluster_choice", selected=entry[0])
+        navigation_override.set(node)
+
+    @reactive.effect(priority=20)
+    @reactive.event(input.nav_to)
+    def _on_nav_to():
+        """Breadcrumb click in the sidebar."""
+        try:
+            node = int(input.nav_to())
+        except (TypeError, ValueError):
+            return
+        if (cluster_ctx() is not None and node in tree.nodes
+                and _cluster_size(node) <= MAX_NAV_CELLS):
+            navigation_override.set(node)
+
     @reactive.effect
+    async def _sync_url():
+        """Mirror the current view into the address bar (see _init_session)."""
+        params = {}
+        if input.search_mode() == "Gene":
+            if input.gene_query():
+                params["gene"] = input.gene_query()
+        elif input.tissue_query():
+            params["tissue"] = input.tissue_query()
+        ctx = cluster_ctx()
+        if params and ctx is not None:
+            params["node"] = ctx["node"]
+            if input.page() == CONTEXT_TAB:
+                params["tab"] = "context"
+        await session.send_custom_message("set_url", {"search": urlencode(params)})
+
+    @reactive.effect(priority=5)
+    async def _announce_spectrum():
+        ctx = cluster_ctx()
+        if ctx is None or ctx["too_large"]:
+            return
+        await session.send_custom_message("spectrum_pending", {
+            "text": f"Computing the spectrum for {len(ctx['cluster_cells'])} cells…",
+        })
+
+    @reactive.effect(priority=20)
     @reactive.event(input.plot_gene_click, ignore_none=True)
     def _on_plot_click():
         payload = input.plot_gene_click()
@@ -482,7 +736,7 @@ def server(input: Inputs, output: Outputs, session: Session):
         else:
             plotted_genes.set(current + [gene])
 
-    @reactive.effect
+    @reactive.effect(priority=20)
     @reactive.event(input.add_gene_btn)
     def _on_add_gene():
         gene = (input.add_gene_query() or "").strip()
@@ -502,7 +756,7 @@ def server(input: Inputs, output: Outputs, session: Session):
             plotted_genes.set(current + [canonical])
             add_gene_error_msg.set(None)
 
-    @reactive.effect
+    @reactive.effect(priority=20)
     @reactive.event(input.clear_extra_plots)
     def _on_clear_plots():
         plotted_genes.set([])
@@ -523,7 +777,7 @@ def server(input: Inputs, output: Outputs, session: Session):
             "plotted_genes_updated", {"genes": genes, "pinned": pinned},
         )
 
-    @reactive.effect
+    @reactive.effect(priority=10)
     def _sync_has_cluster():
         ctx = cluster_ctx()
         has_cluster.set(ctx is not None)
@@ -534,7 +788,7 @@ def server(input: Inputs, output: Outputs, session: Session):
         else:
             spectrum_mode.set("plot")
 
-    @reactive.effect
+    @reactive.effect(priority=10)
     def _sync_slot_genes():
         genes = selected_extra_genes()
         for i in range(MAX_EXTRA_GENES):
@@ -563,7 +817,7 @@ def server(input: Inputs, output: Outputs, session: Session):
         ui.update_numeric("range_start", value=min(positions))
         ui.update_numeric("range_end", value=max(positions))
 
-    @reactive.effect
+    @reactive.effect(priority=20)
     @reactive.event(input.nav_parent, ignore_none=True)
     def _on_nav_parent():
         ctx = cluster_ctx()
@@ -573,7 +827,7 @@ def server(input: Inputs, output: Outputs, session: Session):
         if parents and _cluster_size(parents[0]) <= MAX_NAV_CELLS:
             navigation_override.set(parents[0])
 
-    @reactive.effect
+    @reactive.effect(priority=20)
     @reactive.event(input.nav_child_0, ignore_none=True)
     def _on_nav_child_0():
         ctx = cluster_ctx()
@@ -583,7 +837,7 @@ def server(input: Inputs, output: Outputs, session: Session):
         if children and _cluster_size(children[0]) <= MAX_NAV_CELLS:
             navigation_override.set(children[0])
 
-    @reactive.effect
+    @reactive.effect(priority=20)
     @reactive.event(input.nav_child_1, ignore_none=True)
     def _on_nav_child_1():
         ctx = cluster_ctx()
@@ -652,7 +906,7 @@ def server(input: Inputs, output: Outputs, session: Session):
             if flared is not None:
                 node = flared
                 source = "flared"
-                match_info = "most expressed gene specific to this cell group"
+                match_info = "it's the cluster this gene is the designated marker of."
             else:
                 node, info = gp.find_best_cluster_for_gene(
                     query, gene_matrix, tree, cluster_names, gene_cluster_index,
@@ -664,24 +918,25 @@ def server(input: Inputs, output: Outputs, session: Session):
                 if source == "template":
                     n = info["n_clusters_in_template"]
                     match_info = (
-                        "the group of cells that this gene is most specific to"
+                        "it's the only cluster this gene is grouped in."
                         if n == 1 else
-                        f"appears in {n} clusters in the reference groupings; "
-                        f"shown here is the one with highest expression "
-                        f"(mean {info['mean_pct']:.2f}% of {info['n_cells']} cells)"
+                        f"this gene is grouped in {n} clusters and this one has "
+                        f"the highest expression (mean {info['mean_pct']:.2f}% of "
+                        f"each cell's transcripts, {info['n_cells']} cells)."
                     )
                 else:
                     match_info = (
-                        "gene not in the reference groupings -- fell back to scanning "
-                        "all named clusters by expression "
-                        f"(mean {info['mean_pct']:.2f}% / max {info['max_pct']:.2f}% "
-                        f"of {info['n_cells']} cells)"
+                        "this gene isn't in the curated gene groupings, so every "
+                        "named cluster was scanned and this one has the highest "
+                        f"expression (mean {info['mean_pct']:.2f}%, max "
+                        f"{info['max_pct']:.2f}% of each cell's transcripts, "
+                        f"{info['n_cells']} cells). Treat it as a lead, not a match."
                     )
             assoc = gp.association_quality(
                 query, node, source, annotation_index=annotation_index,
             )
             return {
-                "gene": query, "node": node,
+                "gene": query, "node": node, "source": source,
                 "match_info": match_info, "association": assoc,
             }
 
@@ -705,8 +960,11 @@ def server(input: Inputs, output: Outputs, session: Session):
             gene, node, assoc_source, annotation_index=annotation_index,
         )
         return {
-            "gene": gene, "node": node,
-            "match_info": f"tissue match for '{query}' → {tissue}",
+            "gene": gene, "node": node, "source": assoc_source,
+            "match_info": (
+                f"it's annotated as {tissue}; {gene} is its representative "
+                "gene (the most expressed of its annotated genes)."
+            ),
             "association": assoc,
         }
 
@@ -720,9 +978,15 @@ def server(input: Inputs, output: Outputs, session: Session):
         cluster_cells = gp.get_cluster_node_cell_ids(tree=tree, node=node)
         cluster_color = cluster_colors.get(node, gp.cluster_color_for_node(node))
         ref_gene, _ = gp.reference_gene_for_node(node, annotation_df)
+        navigated_from = r["node"] if node != r["node"] else None
+        association = r["association"] if navigated_from is None else gp.association_quality(
+            r["gene"], node, "navigated", annotation_index=annotation_index,
+        )
         return {
             **r,
             "node": node,              # override wins over r["node"]
+            "navigated_from": navigated_from,
+            "association": association,
             "cluster_cells": cluster_cells,
             "cluster_color": cluster_color,
             "ref_gene": ref_gene,
@@ -755,15 +1019,23 @@ def server(input: Inputs, output: Outputs, session: Session):
     def _results_content():
         r = resolved()
         if r is None:
-            return ui.p(
-                "Type a gene name or select a tissue to get started.",
-                class_="text-muted mb-0",
+            examples = [
+                ui.tags.button(g, type="button", class_="btn btn-sm btn-outline-primary",
+                               onclick=f"HCC_example({json.dumps(g)})")
+                for g in EXAMPLE_GENES
+            ]
+            return ui.div(
+                ui.span("Search a gene or pick a tissue in the sidebar.",
+                        class_="text-muted"),
+                *([ui.span("Try:", class_="text-muted ms-2"), *examples] if examples else []),
+                class_="d-flex flex-wrap align-items-center gap-2",
             )
         if "error" in r:
             return ui.p(r["error"], class_="text-warning mb-0")
 
         ctx = cluster_ctx()
-        cluster_label = cluster_names.get(ctx["node"], f"cluster_{ctx['node']}")
+        node = ctx["node"]
+        cluster_label = cluster_names.get(node, f"cluster_{node}")
         ref_gene = ctx["ref_gene"]
 
         # (n/m) markers count from cluster label suffix e.g. "(33/35)"
@@ -772,7 +1044,7 @@ def server(input: Inputs, output: Outputs, session: Session):
 
         # Predicted annotation (WBbt link)
         annotation_label, annotation_url = None, None
-        own = annotation_df[annotation_df["node"] == ctx["node"]]
+        own = annotation_df[annotation_df["node"] == node]
         if not own.empty:
             annotation_label, annotation_url = gp.wormbase_anatomy_link(
                 own["node_annotation"].iloc[0]
@@ -786,15 +1058,11 @@ def server(input: Inputs, output: Outputs, session: Session):
                 ref_mean = float(ref_row["mean_expression"].iloc[0])
                 ref_pcc = float(ref_row["PCC"].iloc[0])
 
-        def wb_button(url):
+        def gene_link(g, class_=""):
             return ui.tags.a(
-                "View on WormBase ↗",
-                href=url, target="_blank",
-                class_="btn btn-sm btn-outline-primary ms-2",
+                g, href=f"https://wormbase.org/species/c_elegans/gene/{g}",
+                target="_blank", title=f"{g} on WormBase", class_=class_,
             )
-
-        def gene_wb_url(g):
-            return f"https://wormbase.org/species/c_elegans/gene/{g}"
 
         def dash():
             return ui.span("—", class_="text-muted")
@@ -807,53 +1075,65 @@ def server(input: Inputs, output: Outputs, session: Session):
                 class_="mb-1 d-flex align-items-center",
             )
 
-        # Top header (mode-dependent)
+        # Line 1: what is shown. Gene (or tissue) name, how strongly the gene
+        # is tied to this cluster, which cluster, and its annotation.
         if input.search_mode() == "Gene":
-            # Always show the queried gene at the top. The current cluster's
-            # ref gene is shown separately in the Cluster annotation section
-            # ("gene cluster"), so we don't lose it.
-            top = ui.div(
-                ui.h4(ctx["gene"], class_="fw-bold mb-0 d-inline"),
-                wb_button(gene_wb_url(ctx["gene"])),
-                class_="d-flex align-items-center mb-3",
+            heading = ui.h4(gene_link(ctx["gene"], "text-reset"), " ↗",
+                            class_="fw-bold mb-0")
+        else:
+            title = annotation_label or (input.tissue_query() or "").strip()
+            heading = ui.h4(
+                ui.tags.a(title, href=annotation_url, target="_blank",
+                          class_="text-reset") if annotation_url else title,
+                " ↗" if annotation_url else "",
+                class_="fw-bold mb-0",
             )
-        else:
-            # In tissue mode, show the resolved cluster's predicted annotation
-            # (which changes as you navigate), falling back to the search query.
-            heading = annotation_label or (input.tissue_query() or "").strip()
-            top_children = [ui.h4(heading, class_="fw-bold mb-0 d-inline")]
-            if annotation_url:
-                top_children.append(wb_button(annotation_url))
-            top = ui.div(*top_children, class_="d-flex align-items-center mb-3")
-
-        # Cluster annotation section
-        gene_cluster_value = dash() if ref_gene is None else ui.TagList(
-            ui.tags.code(ref_gene),
-            wb_button(gene_wb_url(ref_gene)),
+        badge_text, badge_color, badge_help = ASSOCIATION_BADGES.get(
+            ctx["association"]["status"], ASSOCIATION_BADGES["not_found"])
+        badge = ui.span(badge_text, class_=f"badge text-bg-{badge_color}",
+                        title=badge_help)
+        where = [ui.span("in cluster", class_="text-muted"),
+                 ui.span(f"{node_label(node)} · {len(ctx['cluster_cells'])} cells",
+                         class_="fw-semibold")]
+        if annotation_label and input.search_mode() == "Gene":
+            where += [ui.span("annotated as", class_="text-muted"),
+                      ui.tags.a(annotation_label, href=annotation_url, target="_blank")
+                      if annotation_url else ui.span(annotation_label)]
+        copy_btn = ui.tags.button(
+            "🔗 Copy link", type="button",
+            class_="btn btn-sm btn-outline-secondary ms-auto",
+            title="Copy a link to this exact view",
+            onclick="HCC_copyLink(this)",
         )
-        if annotation_url:
-            pred_value = ui.TagList(ui.span(annotation_label), wb_button(annotation_url))
-        elif annotation_label:
-            pred_value = ui.span(annotation_label)
+        line1 = ui.div(heading, badge, *where, copy_btn,
+                       class_="d-flex flex-wrap align-items-baseline gap-2")
+
+        # Line 2: why this cluster
+        if ctx["navigated_from"] is not None:
+            why = (f"You navigated here from {node_label(ctx['navigated_from'])}, "
+                   f"the cluster chosen for {ctx['gene']}.")
         else:
-            pred_value = dash()
+            why = "Why this cluster: " + r["match_info"]
+        line2 = ui.div(why, class_="text-muted small mt-1")
 
-        cluster_section = ui.div(
-            ui.h6("Cluster annotation",
-                  class_="text-muted text-uppercase small mb-2"),
-            row("gene cluster", gene_cluster_value),
-            row("gene cluster expression",
-                f"{ref_mean:.1f} RPM" if ref_mean is not None else dash()),
-            row("gene cluster PCC",
-                f"{ref_pcc:.2f}" if ref_pcc is not None else dash()),
-            row("predicted annotation", pred_value),
-            row("Tissue gene markers", f"({markers})" if markers else dash()),
-            row("p-value", dash()),
-            class_="mb-3",
+        # Collapsed details
+        ref_value = dash() if ref_gene is None else ui.tags.code(gene_link(ref_gene))
+        details = ui.tags.details(
+            ui.tags.summary("Cluster details", class_="small text-muted"),
+            ui.div(
+                row("Reference gene", ref_value),
+                row("Reference gene expression",
+                    f"{ref_mean:.1f} RPM" if ref_mean is not None else dash()),
+                row("Reference gene PCC",
+                    f"{ref_pcc:.2f}" if ref_pcc is not None else dash()),
+                row("Tissue gene markers", f"({markers})" if markers else dash()),
+                row("Association",
+                    ui.span(badge_text, " – ", badge_help)),
+                class_="small mt-2",
+            ),
+            class_="mt-1",
         )
-
-        return ui.TagList(top, cluster_section)
-
+        return ui.TagList(line1, line2, details)
 
     @render.ui
     def results_header():
@@ -865,10 +1145,7 @@ def server(input: Inputs, output: Outputs, session: Session):
         if ctx is None:
             return ui.p("(no cluster selected)", class_="text-muted mb-0")
 
-        def short_label(nid):
-            label = cluster_names.get(nid, f"cluster_{nid}")
-            match = re.match(r"\[(\d+)\]\s*cluster\s+(\S+)", label)
-            return f"[{match.group(1)}] {match.group(2)}" if match else f"[{nid}]"
+        short_label = node_label
 
         def dash():
             return ui.span("(none)", class_="text-muted")
@@ -879,9 +1156,9 @@ def server(input: Inputs, output: Outputs, session: Session):
             label = f"{arrow} {short_label(node)} ({n} cells)"
             if n > MAX_NAV_CELLS:
                 return ui.tags.span(
-                    label,
-                    class_="btn btn-sm btn-outline-secondary disabled",
-                    title=f"Too large to render (limit: {MAX_NAV_CELLS} cells)",
+                    label, ui.tags.br(),
+                    ui.tags.small(f"too large to show (over {MAX_NAV_CELLS} cells)"),
+                    class_="btn btn-sm btn-outline-secondary disabled text-start",
                 )
             return ui.input_action_button(
                 button_id, label,
@@ -912,9 +1189,41 @@ def server(input: Inputs, output: Outputs, session: Session):
                 class_="mb-3",
             )
 
+        # Breadcrumb: path from the root, each ancestor clickable (unless too
+        # large to show); long paths keep the root and the last 4 steps.
+        path = nx.shortest_path(tree, ROOT_NODE, current_node)
+        if len(path) > 6:
+            path = path[:1] + [None] + path[-4:]
+        crumbs = []
+        for nid in path:
+            if crumbs:
+                crumbs.append(ui.span("›", class_="text-muted"))
+            if nid is None:
+                crumbs.append(ui.span("…", class_="text-muted"))
+                continue
+            text = "All cells" if nid == ROOT_NODE else short_label(nid)
+            if nid == current_node:
+                crumbs.append(ui.span(text, class_="fw-semibold small"))
+            elif _cluster_size(nid) > MAX_NAV_CELLS:
+                crumbs.append(ui.span(
+                    text, class_="text-muted small",
+                    title=f"{_cluster_size(nid)} cells: too large to show",
+                ))
+            else:
+                crumbs.append(ui.tags.button(
+                    text, type="button", class_="btn btn-link",
+                    onclick=f"HCC_navTo({int(nid)})",
+                    title=f"{_cluster_size(nid)} cells",
+                ))
+        breadcrumb = ui.div(
+            *crumbs,
+            class_="hcc-crumbs d-flex flex-wrap align-items-center gap-1 mb-3",
+        )
+
         return ui.TagList(
             ui.h3("Cluster navigation",
                   class_="text-primary text-uppercase fw-bold small mb-2"),
+            breadcrumb,
             row("Parental cluster", parent_widgets),
             row("Current cluster", [current_widget]),
             row("Children clusters", children_widgets),
@@ -925,29 +1234,6 @@ def server(input: Inputs, output: Outputs, session: Session):
         return _nav_content()
 
     # ----- Spectrum tab ------------------------------------------------------
-
-    @reactive.calc
-    def spectrum_inputs():
-        ctx = cluster_ctx()
-        if ctx is None or ctx["too_large"]:
-            return None
-        try:
-            qualifying, gene_colors = gp.compute_high_expression_genes_in_cluster(
-                gene_matrix=gene_matrix, tree=tree, cluster_node=ctx["node"],
-                threshold_pct=input.threshold(), min_cells=1,
-            )
-        except ValueError:
-            # Node has no cells in the expression matrix
-            return None
-        gene_color_map = dict(gene_colors)
-        if ctx["gene"] not in gene_color_map:
-            gene_color_map[ctx["gene"]] = (0.85, 0.1, 0.1, 1.0)
-        genes_to_show = list(set(qualifying.index.tolist()) | {ctx["gene"]})
-        return {
-            "ctx": ctx,
-            "gene_color_map": gene_color_map,
-            "genes_to_show": genes_to_show,
-        }
 
     @render.ui
     def spectrum_section():
@@ -964,15 +1250,16 @@ def server(input: Inputs, output: Outputs, session: Session):
         return output_widget("spectrum_plot")
 
     @render_widget
-    def spectrum_plot():
-        d = spectrum_inputs()
-        if d is None:
+    async def spectrum_plot():
+        ctx = cluster_ctx()
+        if ctx is None or ctx["too_large"]:
             return None
-        return plot_cell_content_plotly(
-            node=d["ctx"]["node"], gene_matrix=gene_matrix, tree=tree,
-            template=template,
-            gene_color_map=d["gene_color_map"],
-            genes_to_show=d["genes_to_show"],
+        # The linkage + figure take seconds for a few hundred cells. Doing it
+        # in a worker thread keeps the event loop free, so other sessions and
+        # static files (e.g. the widget JS the browser is loading) aren't
+        # blocked meanwhile.
+        return await asyncio.to_thread(
+            build_spectrum_figure, ctx["node"], ctx["gene"], input.threshold(),
         )
 
     # ----- Context tab: ref/query plots --------------------------------------
@@ -1041,6 +1328,7 @@ def server(input: Inputs, output: Outputs, session: Session):
                 class_="btn btn-sm btn-outline-secondary mb-2",
             ),
             ui.output_plot("annotation_strip_plot", height="120px"),
+            ui.output_ui("strip_legend"),
             ui.output_ui("ref_gene_section"),
             ui.output_ui("query_gene_label"),
             ui.output_plot("query_gene_plot", height="200px"),
@@ -1095,6 +1383,51 @@ def server(input: Inputs, output: Outputs, session: Session):
                 offset = int(positions[0])
         return plot_annotation_strip_matplotlib(
             ctx_matrix, cell_annotation_colors, offset=offset,
+        )
+
+    @render.ui
+    def strip_legend():
+        """Legend for the strip colors present in the current cell range,
+        in left-to-right order of first appearance."""
+        if not has_cluster.get() or not cell_annotation_colors:
+            return None
+        groups = {}  # label -> {"keys": [...], "n": count}
+        for cell in context_matrix().index:
+            key = cell_color_keys.get(cell)
+            if key is None:
+                continue
+            label = cell_annotation_labels.get(key, "unlabelled")
+            group = groups.setdefault(label, {"keys": [], "n": 0})
+            if key not in group["keys"]:
+                group["keys"].append(key)
+            group["n"] += 1
+        if not groups:
+            return None
+
+        def swatch(key):
+            r, g, b, a = key
+            return ui.span(
+                class_="hcc-legend-swatch",
+                style=f"background: rgba({r*255:.0f},{g*255:.0f},{b*255:.0f},{a * 0.9:.2f});",
+            )
+
+        if not cell_annotation_labels:
+            return ui.div("Strip colors: per-cell annotation (no labels available).",
+                          class_="text-muted small mb-2")
+        items = [
+            ui.span(*[swatch(k) for k in group["keys"]], label,
+                    ui.span(f" ({group['n']} cells)", class_="text-muted"),
+                    class_="text-nowrap")
+            for label, group in groups.items()
+        ]
+        # A handful of groups (e.g. after zooming on a cluster) is shown
+        # open; the full range has ~30, which would push the plots down.
+        return ui.tags.details(
+            ui.tags.summary(f"Strip colors: {len(groups)} cell groups in this range",
+                            class_="text-muted"),
+            ui.div(*items, class_="d-flex flex-wrap column-gap-3 row-gap-1 mt-1"),
+            open=len(groups) <= 8 or None,
+            class_="small mb-2",
         )
 
     @render.ui

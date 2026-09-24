@@ -27,6 +27,7 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+from matplotlib.colors import to_rgba
 
 import gene_plots as gp
 
@@ -52,18 +53,29 @@ METADATA_PATHS = [
 ]
 
 
-@lru_cache(maxsize=None)
-def load_cell_annotation_colors():
-    """{cell_id: color} for the per-cell annotation strip.
+def _rgba_key(color):
+    """Hashable, rounding-tolerant key for comparing colors in any format."""
+    return tuple(round(c, 3) for c in to_rgba(color))
 
-    Reads the `selected` column, which stores RGBA tuple strings such as
-    `"(0.0, 0.667, 0.572, 1.0)"`. Parses them into real tuples so the strip
-    plotter can pass them straight to matplotlib's `facecolor=`. Falls back
-    to `experiment_color` (hex) if `selected` is missing.
+
+def _looks_like_color(value):
+    return isinstance(value, str) and value.strip().startswith(("#", "("))
+
+
+@lru_cache(maxsize=None)
+def _load_cell_metadata():
+    """({cell_id: color}, {rgba_key: label}) for the per-cell annotation strip.
+
+    Colors come from the `selected` column (RGBA tuple strings such as
+    `"(0.0, 0.667, 0.572, 1.0)"`, parsed into real tuples) or, failing that,
+    `experiment_color` (hex). Labels come from the first text column that
+    gives each color a single label (e.g. experiment_type for
+    experiment_color; one label may span several colors). The label map is
+    empty if there is no such column.
     """
     path = next((p for p in METADATA_PATHS if p.exists()), None)
     if path is None:
-        return {}
+        return {}, {}
     df = pd.read_csv(path, sep="\t", index_col=0)
 
     if "selected" in df.columns:
@@ -72,14 +84,41 @@ def load_cell_annotation_colors():
                 return ast.literal_eval(s)
             except (ValueError, SyntaxError):
                 return None
-        parsed = df["selected"].map(_parse)
-        return {cell: color for cell, color in parsed.items() if color is not None}
+        colors = df["selected"].map(_parse)
+    elif "experiment_color" in df.columns:
+        colors = df["experiment_color"]
+    else:
+        return {}, {}
+    colors = colors[colors.notna()]
+    if colors.empty:
+        return {}, {}
 
-    if "experiment_color" in df.columns:
-        return df["experiment_color"].to_dict()
+    keys = colors.map(_rgba_key)
+    labels = {}
+    for col in df.columns:
+        values = df.loc[colors.index, col]
+        if not pd.api.types.is_string_dtype(values) or values.isna().any() \
+                or values.map(_looks_like_color).any():
+            continue
+        pairs = pd.DataFrame({"key": keys, "label": values})
+        if (pairs.groupby("key")["label"].nunique() == 1).all():
+            labels = pairs.drop_duplicates("key").set_index("key")["label"].to_dict()
+            break
+    return colors.to_dict(), labels
 
-    return {}
 
+def load_cell_annotation_colors():
+    """{cell_id: color} for the per-cell annotation strip."""
+    return _load_cell_metadata()[0]
+
+
+def load_cell_annotation_labels():
+    """{rgba_key: label} naming each strip color (empty if unknown).
+    Look colors up with `rgba_key(color)`."""
+    return _load_cell_metadata()[1]
+
+
+rgba_key = _rgba_key
 
 
 @lru_cache(maxsize=None)

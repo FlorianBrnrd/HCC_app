@@ -38,6 +38,18 @@ shiny run --reload app.py
 Data is read from `../data` by default; set `GENE_APP_DATA_DIR` to override.
 Opens on `http://localhost:8000` by default.
 
+## Sharing a view
+
+The address bar always reflects the current view, and **🔗 Copy link** in
+the results card copies it. Opening such a link restores the view:
+
+| Parameter | Meaning |
+| --------- | ------- |
+| `gene=hsp-4` | Gene search (case-insensitive) |
+| `tissue=excretory gland cell` | Tissue search (used when there's no `gene`) |
+| `node=102` | Cluster shown, e.g. after navigating up/down the tree |
+| `tab=context` | Open the "Gene expression across all cells" tab |
+
 ## What maps to what
 
 | Streamlit                                     | Shiny for Python                              |
@@ -68,7 +80,7 @@ For this app the graph is:
 inputs ─┐
         │
         ▼
-     resolved ──▶ cluster_ctx ─┬─▶ spectrum_inputs ─▶ spectrum_plot
+     resolved ──▶ cluster_ctx ─┬─▶ spectrum_plot (computed in a worker thread)
                                │
                                ├─▶ ref_gene_pane / query_gene_plot / extra_plot_i (×20)
                                │        ▲
@@ -83,8 +95,7 @@ plotted_genes (Plot buttons / add-gene box) ─▶ selected_extra_genes ─▶ p
 
 Concretely:
 
-- Moving the **threshold slider** invalidates only `spectrum_inputs` and
-  `spectrum_plot`. Ref/query/extra plots and the table don't recompute.
+- Moving the **threshold slider** invalidates only `spectrum_plot`. Ref/query/extra plots and the table don't recompute.
 - Changing the **cell range** (or zoom to cluster) invalidates
   `context_matrix` and the plots that read it. The spectrum plot and table
   don't recompute.
