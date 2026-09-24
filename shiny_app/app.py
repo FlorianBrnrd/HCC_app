@@ -90,10 +90,12 @@ _ref_gene_by_node = (
 
 # How strongly the shown gene is tied to the shown cluster
 # (gp.association_quality status -> badge label, bootstrap color, tooltip)
+# ("established" and "curated" share the Curated badge; only the tooltip
+# says when the gene is also the cluster's designated flared marker.)
 ASSOCIATION_BADGES = {
-    "established": ("Established marker", "success",
+    "established": ("Curated", "success",
                     "This gene is the designated marker gene of this cluster."),
-    "curated": ("Curated", "primary",
+    "curated": ("Curated", "success",
                 "This gene was used to annotate this cluster."),
     "predicted": ("Predicted", "warning",
                   "Correlated with this cluster, but not used to annotate it."),
@@ -491,6 +493,23 @@ app_ui = ui.page_navbar(
             #spectrum_section.hcc-pending .shiny-ipywidget-output { opacity: .35; }
             .hcc-results { font-size: .95rem; }
             .hcc-results details summary { cursor: pointer; }
+            /* Gene | link | Cluster blocks of the results card */
+            .hcc-block {
+                flex: 1 1 260px; min-width: 0;
+                border: 1px solid var(--bs-border-color); border-radius: .5rem;
+                padding: .5rem .75rem;
+            }
+            .hcc-block-label {
+                font-size: .7rem; letter-spacing: .05em; text-transform: uppercase;
+                color: var(--bs-secondary-color);
+            }
+            .hcc-link { flex: 0 0 auto; display: flex; align-items: center; }
+            .hcc-link-line { width: 1.25rem; border-top: 1px solid var(--bs-border-color); }
+            /* Stacked blocks on narrow screens: centred badge, no lines */
+            @media (max-width: 767.98px) {
+                .hcc-link { width: 100%; justify-content: center; }
+                .hcc-link-line { display: none; }
+            }
             .hcc-crumbs .btn-link { padding: 0 .15rem; font-size: .85rem; }
             .hcc-legend-swatch {
                 display: inline-block; width: .8rem; height: .8rem;
@@ -1075,46 +1094,91 @@ def server(input: Inputs, output: Outputs, session: Session):
                 class_="mb-1 d-flex align-items-center",
             )
 
-        # Line 1: what is shown. Gene (or tissue) name, how strongly the gene
-        # is tied to this cluster, which cluster, and its annotation.
-        if input.search_mode() == "Gene":
-            heading = ui.h4(gene_link(ctx["gene"], "text-reset"), " ↗",
-                            class_="fw-bold mb-0")
-        else:
-            title = annotation_label or (input.tissue_query() or "").strip()
-            heading = ui.h4(
-                ui.tags.a(title, href=annotation_url, target="_blank",
-                          class_="text-reset") if annotation_url else title,
-                " ↗" if annotation_url else "",
-                class_="fw-bold mb-0",
+        def wb_button(url, what):
+            return ui.tags.a(
+                "WormBase ↗", href=url, target="_blank",
+                title=f"{what} on WormBase",
+                class_="btn btn-sm btn-outline-primary",
             )
+
+        def block_label(text, tag=None):
+            return ui.div(
+                ui.span(text),
+                ui.span(tag, class_="badge rounded-pill text-bg-light border ms-2")
+                if tag else None,
+                class_="hcc-block-label mb-1",
+            )
+
+        # Same template for both search modes: Gene | link | Cluster. Only the
+        # labels change, plus a "searched" tag on the side the search started
+        # from ("navigated" once the user has moved to another cluster).
+        gene_mode = input.search_mode() == "Gene"
+        navigated = ctx["navigated_from"] is not None
+        if gene_mode:
+            gene_title, gene_tag = "Gene", "searched"
+            cluster_tag = "navigated" if navigated else None
+        else:
+            gene_title = ("Representative gene" if not navigated else
+                          f"Representative gene of {node_label(ctx['navigated_from'])}")
+            gene_tag = None
+            cluster_tag = "navigated" if navigated else "searched"
+
+        gene = ctx["gene"]
+        gene_block = ui.div(
+            block_label(gene_title, gene_tag),
+            ui.div(
+                ui.h4(gene, class_="fw-bold mb-0"),
+                wb_button(f"https://wormbase.org/species/c_elegans/gene/{gene}", gene),
+                class_="d-flex flex-wrap align-items-center gap-2",
+            ),
+            class_="hcc-block",
+        )
+
         badge_text, badge_color, badge_help = ASSOCIATION_BADGES.get(
             ctx["association"]["status"], ASSOCIATION_BADGES["not_found"])
-        badge = ui.span(badge_text, class_=f"badge text-bg-{badge_color}",
-                        title=badge_help)
-        where = [ui.span("in cluster", class_="text-muted"),
-                 ui.span(f"{node_label(node)} · {len(ctx['cluster_cells'])} cells",
-                         class_="fw-semibold")]
-        if annotation_label and input.search_mode() == "Gene":
-            where += [ui.span("annotated as", class_="text-muted"),
-                      ui.tags.a(annotation_label, href=annotation_url, target="_blank")
-                      if annotation_url else ui.span(annotation_label)]
+        # The badge sits between the blocks: it qualifies the gene-cluster link
+        link = ui.div(
+            ui.div(class_="hcc-link-line"),
+            ui.span(badge_text, class_=f"badge text-bg-{badge_color}", title=badge_help),
+            ui.div(class_="hcc-link-line"),
+            class_="hcc-link",
+        )
+
+        if annotation_label:
+            annotation = ui.div(
+                ui.span(annotation_label),
+                wb_button(annotation_url, annotation_label) if annotation_url else None,
+                class_="d-flex flex-wrap align-items-center gap-2",
+            )
+        else:
+            annotation = ui.div("No predicted annotation", class_="text-muted small")
+        cluster_block = ui.div(
+            block_label("Cluster", cluster_tag),
+            ui.div(f"{node_label(node)} · {len(ctx['cluster_cells'])} cells",
+                   class_="fw-semibold mb-1"),
+            annotation,
+            class_="hcc-block",
+        )
+        blocks = ui.div(gene_block, link, cluster_block,
+                        class_="d-flex flex-wrap align-items-stretch gap-2")
+
+        # Why this cluster, with the share button on the same line
+        if navigated:
+            why = (f"You navigated here from {node_label(ctx['navigated_from'])}, "
+                   f"the cluster chosen for {gene}.")
+        else:
+            why = "Why this cluster: " + r["match_info"]
         copy_btn = ui.tags.button(
             "🔗 Copy link", type="button",
-            class_="btn btn-sm btn-outline-secondary ms-auto",
+            class_="btn btn-sm btn-outline-secondary flex-shrink-0",
             title="Copy a link to this exact view",
             onclick="HCC_copyLink(this)",
         )
-        line1 = ui.div(heading, badge, *where, copy_btn,
-                       class_="d-flex flex-wrap align-items-baseline gap-2")
-
-        # Line 2: why this cluster
-        if ctx["navigated_from"] is not None:
-            why = (f"You navigated here from {node_label(ctx['navigated_from'])}, "
-                   f"the cluster chosen for {ctx['gene']}.")
-        else:
-            why = "Why this cluster: " + r["match_info"]
-        line2 = ui.div(why, class_="text-muted small mt-1")
+        why_row = ui.div(
+            ui.div(why, class_="text-muted small"),
+            copy_btn,
+            class_="d-flex align-items-center justify-content-between gap-3 mt-2",
+        )
 
         # Collapsed details
         ref_value = dash() if ref_gene is None else ui.tags.code(gene_link(ref_gene))
@@ -1133,7 +1197,7 @@ def server(input: Inputs, output: Outputs, session: Session):
             ),
             class_="mt-1",
         )
-        return ui.TagList(line1, line2, details)
+        return ui.TagList(blocks, why_row, details)
 
     @render.ui
     def results_header():
