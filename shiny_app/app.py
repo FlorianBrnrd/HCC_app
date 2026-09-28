@@ -8,7 +8,6 @@ figure with dendrogram, and hierarchy navigation (parent / children).
 import asyncio
 import json
 import re
-from functools import lru_cache
 from urllib.parse import parse_qs, urlencode
 
 import networkx as nx
@@ -79,19 +78,16 @@ tissue_lookup = {t.lower(): t for t in tissue_options}
 ROOT_NODE = next(n for n in tree.nodes if tree.in_degree(n) == 0)
 
 # Clickable examples on the empty start page
-EXAMPLE_GENES = [g for g in ("nspc-20", "hsp-4", "let-858") if g in gene_matrix.columns]
+# Highlight color for clusters that have no color in the color table
+NO_CLUSTER_COLOR = "#6c757d"
 
-# Reference gene per annotated node (highest mean expression), for labels
-_ref_gene_by_node = (
-    annotation_df.loc[annotation_df.groupby("node")["mean_expression"].idxmax()]
-    .set_index("node")["gene_name"].to_dict()
-    if not annotation_df.empty else {}
-)
+EXAMPLE_GENES = [g for g in ("nspc-20", "hsp-4", "let-858") if g in gene_matrix.columns]
 
 # How strongly the shown gene is tied to the shown cluster
 # (gp.association_quality status -> badge label, bootstrap color, tooltip)
-# ("established" and "curated" share the Curated badge; only the tooltip
+# ("established" and "curated" are both shown as Curated; only the tooltip
 # says when the gene is also the cluster's designated flared marker.)
+# status -> (label, bootstrap color, tooltip)
 ASSOCIATION_BADGES = {
     "established": ("Curated", "success",
                     "This gene is the designated marker gene of this cluster."),
@@ -102,6 +98,12 @@ ASSOCIATION_BADGES = {
     "not_found": ("No annotation", "secondary",
                   "No curated annotation links this gene to this cluster."),
 }
+# Wording of the status line in the Gene column
+ASSOCIATION_PHRASES = {
+    "Curated": "Curated in this cluster",
+    "Predicted": "Predicted for this cluster",
+    "No annotation": "No annotation in this cluster",
+}
 
 
 def _cluster_size(nid):
@@ -109,21 +111,14 @@ def _cluster_size(nid):
     return len(gp.get_cluster_node_cell_ids(tree=tree, node=nid))
 
 
-@lru_cache(maxsize=None)
-def _top_expressed_gene(nid):
-    gene, _ = gp.most_expressed_gene_in_cluster(nid, gene_matrix, tree)
-    return gene
-
-
 def node_label(nid):
-    """Short cluster label such as "[102] hsp-4". The gene comes from the
-    cluster name, else the node's reference gene, else its most expressed
-    gene, so unnamed nodes still get something recognisable."""
+    """Short cluster label such as "[102] hsp-4". Each named cluster has its
+    own gene; the other tree nodes have none and show "N/A" (they don't
+    borrow a gene from a parent or child cluster)."""
     match = re.match(r"\[(\d+)\]\s*cluster\s+(\S+)", cluster_names.get(nid, ""))
     if match:
         return f"[{match.group(1)}] {match.group(2)}"
-    gene = _ref_gene_by_node.get(nid) or _top_expressed_gene(nid)
-    return f"[{nid}] {gene}" if gene else f"[{nid}]"
+    return f"[{nid}] N/A"
 
 
 def _compact_number(x, pos=None):
@@ -138,6 +133,18 @@ def _compact_number(x, pos=None):
     if ax == int(ax):
         return f"{int(x)}"
     return f"{x:g}"
+
+
+def _cell_xlim(n):
+    """X-limits shared by the strip and the gene plots: exactly from the first
+    cell to the last (cell i sits at x = i), so a short zoomed range starts
+    on the y-axis instead of half a cell in."""
+    return (0, n - 1) if n > 1 else (-0.5, 0.5)
+
+
+# Below this many cells the gene plots also draw points, so isolated cells
+# (a line needs two neighbours) stay visible
+MARKER_MAX_CELLS = 60
 
 
 def _pin_axes_position(fig):
@@ -196,14 +203,17 @@ def plot_annotation_strip_matplotlib(gene_matrix, cell_colors, offset=0):
         label_positions.pop()
     label_positions.append(n - 1)
     for pos in label_positions:
+        # The last label sits on the right edge now that the x-range ends at
+        # the last cell: keep it flat and right-aligned so it stays in view
+        last = pos == n - 1 and n > 1
         ax.text(
             pos, 1.05, str(pos + offset),
-            ha="left", va="bottom", fontsize=5, color="#555",
-            rotation=45,
+            ha="right" if last else "left", va="bottom", fontsize=5, color="#555",
+            rotation=0 if last else 45,
             transform=ax.get_xaxis_transform(),
         )
 
-    ax.set_xlim(-0.5, n - 0.5)
+    ax.set_xlim(*_cell_xlim(n))
     ax.set_ylim(0, 1)
     ax.set_xticks([])
     ax.set_yticks([])
@@ -245,10 +255,13 @@ def plot_gene_across_all_cells_matplotlib(gene, gene_matrix, highlight_cells,
         color_arg = highlight_color
 
     fig, ax = plt.subplots(figsize=(8, 2), dpi=100)
-    ax.plot(x, values, color="#cccccc", linewidth=1)
-    ax.plot(x, highlighted_values, color=color_arg, linewidth=2.2)
+    # clip_on=False: points on the first / last cell sit on the plot edge
+    markers = ({"marker": "o", "markersize": 3.5, "clip_on": False}
+               if n <= MARKER_MAX_CELLS else {})
+    ax.plot(x, values, color="#cccccc", linewidth=1, **markers)
+    ax.plot(x, highlighted_values, color=color_arg, linewidth=2.2, **markers)
 
-    ax.set_xlim(-0.5, n - 0.5)
+    ax.set_xlim(*_cell_xlim(n))
     ax.set_title(gene, loc="left", fontsize=11, fontweight="bold", pad=6)
     ax.set_xticks([])
     ax.tick_params(axis="y", labelsize=9)
@@ -473,8 +486,9 @@ context_page = ui.nav_panel(
 )
 
 app_ui = ui.page_navbar(
-    spectrum_page,
+    # Expression plots + table first, spectrum second
     context_page,
+    spectrum_page,
     sidebar=explorer_sidebar,
     header=ui.TagList(
         # Spinners / pulse on outputs while they recompute
@@ -493,22 +507,19 @@ app_ui = ui.page_navbar(
             #spectrum_section.hcc-pending .shiny-ipywidget-output { opacity: .35; }
             .hcc-results { font-size: .95rem; }
             .hcc-results details summary { cursor: pointer; }
-            /* Gene | link | Cluster blocks of the results card */
+            /* Gene | Cluster columns of the results card */
             .hcc-block {
-                flex: 1 1 260px; min-width: 0;
+                height: 100%;
                 border: 1px solid var(--bs-border-color); border-radius: .5rem;
                 padding: .5rem .75rem;
+            }
+            .hcc-status-dot {
+                display: inline-block; width: .55rem; height: .55rem;
+                border-radius: 50%; margin-right: .35rem;
             }
             .hcc-block-label {
                 font-size: .7rem; letter-spacing: .05em; text-transform: uppercase;
                 color: var(--bs-secondary-color);
-            }
-            .hcc-link { flex: 0 0 auto; display: flex; align-items: center; }
-            .hcc-link-line { width: 1.25rem; border-top: 1px solid var(--bs-border-color); }
-            /* Stacked blocks on narrow screens: centred badge, no lines */
-            @media (max-width: 767.98px) {
-                .hcc-link { width: 100%; justify-content: center; }
-                .hcc-link-line { display: none; }
             }
             .hcc-crumbs .btn-link { padding: 0 .15rem; font-size: .85rem; }
             .hcc-legend-swatch {
@@ -648,7 +659,7 @@ def server(input: Inputs, output: Outputs, session: Session):
     @reactive.effect(priority=40)
     def _init_session():
         """Fill the gene autocomplete and restore a shared view from the URL
-        (?gene=… or ?tissue=…, plus &node=… and &tab=context). Runs once:
+        (?gene=… or ?tissue=…, plus &node=… and &tab=spectrum). Runs once:
         the URL is read in isolation, so nothing re-triggers this."""
         with reactive.isolate():
             params = parse_qs((session.clientdata.url_search() or "").lstrip("?"))
@@ -667,8 +678,8 @@ def server(input: Inputs, output: Outputs, session: Session):
             node = None
         if node is not None and node in tree.nodes:
             pending_node.set(node)
-        if (params.get("tab") or [""])[0] == "context":
-            ui.update_navset("page", selected=CONTEXT_TAB)
+        if (params.get("tab") or [""])[0] == "spectrum":
+            ui.update_navset("page", selected=SPECTRUM_TAB)
 
     last_query = {"key": None}
 
@@ -729,8 +740,8 @@ def server(input: Inputs, output: Outputs, session: Session):
         ctx = cluster_ctx()
         if params and ctx is not None:
             params["node"] = ctx["node"]
-            if input.page() == CONTEXT_TAB:
-                params["tab"] = "context"
+            if input.page() == SPECTRUM_TAB:
+                params["tab"] = "spectrum"
         await session.send_custom_message("set_url", {"search": urlencode(params)})
 
     @reactive.effect(priority=5)
@@ -995,7 +1006,9 @@ def server(input: Inputs, output: Outputs, session: Session):
         override = navigation_override.get()
         node = override if override is not None else r["node"]
         cluster_cells = gp.get_cluster_node_cell_ids(tree=tree, node=node)
-        cluster_color = cluster_colors.get(node, gp.cluster_color_for_node(node))
+        # Clusters missing from the color table are drawn grey, not given a
+        # made-up color
+        cluster_color = cluster_colors.get(node, NO_CLUSTER_COLOR)
         ref_gene, _ = gp.reference_gene_for_node(node, annotation_df)
         navigated_from = r["node"] if node != r["node"] else None
         association = r["association"] if navigated_from is None else gp.association_quality(
@@ -1109,7 +1122,7 @@ def server(input: Inputs, output: Outputs, session: Session):
                 class_="hcc-block-label mb-1",
             )
 
-        # Same template for both search modes: Gene | link | Cluster. Only the
+        # Same template for both search modes: Gene | Cluster. Only the
         # labels change, plus a "searched" tag on the side the search started
         # from ("navigated" once the user has moved to another cluster).
         gene_mode = input.search_mode() == "Gene"
@@ -1124,6 +1137,15 @@ def server(input: Inputs, output: Outputs, session: Session):
             cluster_tag = "navigated" if navigated else "searched"
 
         gene = ctx["gene"]
+        badge_text, badge_color, badge_help = ASSOCIATION_BADGES.get(
+            ctx["association"]["status"], ASSOCIATION_BADGES["not_found"])
+        # How the gene relates to the cluster on the right: a quiet status
+        # line rather than a verdict between the two columns
+        status = ui.div(
+            ui.span(class_=f"hcc-status-dot bg-{badge_color}"),
+            ASSOCIATION_PHRASES[badge_text],
+            class_="small text-muted mt-1", title=badge_help,
+        )
         gene_block = ui.div(
             block_label(gene_title, gene_tag),
             ui.div(
@@ -1131,18 +1153,10 @@ def server(input: Inputs, output: Outputs, session: Session):
                 wb_button(f"https://wormbase.org/species/c_elegans/gene/{gene}", gene),
                 class_="d-flex flex-wrap align-items-center gap-2",
             ),
+            status,
             class_="hcc-block",
         )
 
-        badge_text, badge_color, badge_help = ASSOCIATION_BADGES.get(
-            ctx["association"]["status"], ASSOCIATION_BADGES["not_found"])
-        # The badge sits between the blocks: it qualifies the gene-cluster link
-        link = ui.div(
-            ui.div(class_="hcc-link-line"),
-            ui.span(badge_text, class_=f"badge text-bg-{badge_color}", title=badge_help),
-            ui.div(class_="hcc-link-line"),
-            class_="hcc-link",
-        )
 
         if annotation_label:
             annotation = ui.div(
@@ -1159,8 +1173,11 @@ def server(input: Inputs, output: Outputs, session: Session):
             annotation,
             class_="hcc-block",
         )
-        blocks = ui.div(gene_block, link, cluster_block,
-                        class_="d-flex flex-wrap align-items-stretch gap-2")
+        blocks = ui.div(
+            ui.div(gene_block, class_="col-12 col-md-6"),
+            ui.div(cluster_block, class_="col-12 col-md-6"),
+            class_="row g-2",
+        )
 
         # Why this cluster, with the share button on the same line
         if navigated:

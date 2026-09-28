@@ -48,7 +48,7 @@ the results card copies it. Opening such a link restores the view:
 | `gene=hsp-4` | Gene search (case-insensitive) |
 | `tissue=excretory gland cell` | Tissue search (used when there's no `gene`) |
 | `node=102` | Cluster shown, e.g. after navigating up/down the tree |
-| `tab=context` | Open the "Gene expression across all cells" tab |
+| `tab=spectrum` | Open the "Cells associated with this gene" (spectrum) tab; without it the first tab, "Gene expression across all cells", opens |
 
 ## What maps to what
 
