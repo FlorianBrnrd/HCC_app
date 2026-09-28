@@ -477,7 +477,13 @@ explorer_sidebar = ui.sidebar(
 
 spectrum_page = ui.nav_panel(
     SPECTRUM_TAB,
-    ui.output_ui("spectrum_section"),
+    # Static container: the widget is never removed (removing it while it's
+    # still initialising makes anywidget throw); only the message changes
+    ui.div(
+        ui.output_ui("spectrum_message"),
+        output_widget("spectrum_plot"),
+        id="spectrum_section",
+    ),
 )
 
 context_page = ui.nav_panel(
@@ -506,7 +512,6 @@ app_ui = ui.page_navbar(
             }
             #spectrum_section.hcc-pending .shiny-ipywidget-output { opacity: .35; }
             .hcc-results { font-size: .95rem; }
-            .hcc-results details summary { cursor: pointer; }
             /* Gene | Cluster columns of the results card */
             .hcc-block {
                 height: 100%;
@@ -629,8 +634,7 @@ def server(input: Inputs, output: Outputs, session: Session):
     # clusters doesn't rebuild the inputs and grid on that tab.
     has_cluster = reactive.value(False)
     # What the spectrum tab shows: None, "plot", or ("too_large", n_cells).
-    # Same idea: re-creating the widget container on every cluster change
-    # races with the widget render ("No model found" in the browser).
+    # Drives only the message above the (always present) spectrum widget.
     spectrum_mode = reactive.value(None)
     # Gene shown in each extra-plot slot (and whether the slot is in use), so
     # adding or removing a gene only re-renders the slots that changed
@@ -1067,12 +1071,6 @@ def server(input: Inputs, output: Outputs, session: Session):
 
         ctx = cluster_ctx()
         node = ctx["node"]
-        cluster_label = cluster_names.get(node, f"cluster_{node}")
-        ref_gene = ctx["ref_gene"]
-
-        # (n/m) markers count from cluster label suffix e.g. "(33/35)"
-        m = re.search(r"\((\d+/\d+)\)\s*$", cluster_label)
-        markers = m.group(1) if m else None
 
         # Predicted annotation (WBbt link)
         annotation_label, annotation_url = None, None
@@ -1080,31 +1078,6 @@ def server(input: Inputs, output: Outputs, session: Session):
         if not own.empty:
             annotation_label, annotation_url = gp.wormbase_anatomy_link(
                 own["node_annotation"].iloc[0]
-            )
-
-        # Reference gene's mean expression + PCC in this cluster
-        ref_mean, ref_pcc = None, None
-        if ref_gene is not None and not own.empty:
-            ref_row = own[own["gene_name"] == ref_gene]
-            if not ref_row.empty:
-                ref_mean = float(ref_row["mean_expression"].iloc[0])
-                ref_pcc = float(ref_row["PCC"].iloc[0])
-
-        def gene_link(g, class_=""):
-            return ui.tags.a(
-                g, href=f"https://wormbase.org/species/c_elegans/gene/{g}",
-                target="_blank", title=f"{g} on WormBase", class_=class_,
-            )
-
-        def dash():
-            return ui.span("—", class_="text-muted")
-
-        def row(label, value):
-            return ui.div(
-                # me-1: flex layout drops the trailing space after the colon
-                ui.span(f"{label}:", class_="text-muted me-1"),
-                value,
-                class_="mb-1 d-flex align-items-center",
             )
 
         def wb_button(url, what):
@@ -1157,64 +1130,40 @@ def server(input: Inputs, output: Outputs, session: Session):
             class_="hcc-block",
         )
 
-
+        # Cluster column: annotation first (bold, with its WormBase button),
+        # then size and the cluster's marker gene (the gene in its name; each
+        # named cluster has its own, unnamed ones have none)
         if annotation_label:
             annotation = ui.div(
-                ui.span(annotation_label),
+                ui.h5(annotation_label, class_="fw-bold mb-0"),
                 wb_button(annotation_url, annotation_label) if annotation_url else None,
                 class_="d-flex flex-wrap align-items-center gap-2",
             )
         else:
-            annotation = ui.div("No predicted annotation", class_="text-muted small")
+            annotation = ui.h5("No predicted annotation", class_="text-muted mb-0")
+        marker_gene = node_label(node).split(" ", 1)[1]
         cluster_block = ui.div(
             block_label("Cluster", cluster_tag),
-            ui.div(f"{node_label(node)} · {len(ctx['cluster_cells'])} cells",
-                   class_="fw-semibold mb-1"),
             annotation,
+            ui.div(f"{len(ctx['cluster_cells'])} cells", class_="mt-1"),
+            ui.div(ui.span("marker gene: ", class_="text-muted"), marker_gene,
+                   class_="small"),
             class_="hcc-block",
         )
-        blocks = ui.div(
-            ui.div(gene_block, class_="col-12 col-md-6"),
-            ui.div(cluster_block, class_="col-12 col-md-6"),
-            class_="row g-2",
-        )
-
-        # Why this cluster, with the share button on the same line
-        if navigated:
-            why = (f"You navigated here from {node_label(ctx['navigated_from'])}, "
-                   f"the cluster chosen for {gene}.")
-        else:
-            why = "Why this cluster: " + r["match_info"]
         copy_btn = ui.tags.button(
             "🔗 Copy link", type="button",
-            class_="btn btn-sm btn-outline-secondary flex-shrink-0",
+            class_="btn btn-sm btn-outline-secondary",
             title="Copy a link to this exact view",
             onclick="HCC_copyLink(this)",
         )
-        why_row = ui.div(
-            ui.div(why, class_="text-muted small"),
-            copy_btn,
-            class_="d-flex align-items-center justify-content-between gap-3 mt-2",
+        blocks = ui.div(
+            ui.div(gene_block, class_="col-12 col-md"),
+            ui.div(cluster_block, class_="col-12 col-md"),
+            ui.div(copy_btn, class_="col-12 col-md-auto"),
+            class_="row g-2",
         )
 
-        # Collapsed details
-        ref_value = dash() if ref_gene is None else ui.tags.code(gene_link(ref_gene))
-        details = ui.tags.details(
-            ui.tags.summary("Cluster details", class_="small text-muted"),
-            ui.div(
-                row("Reference gene", ref_value),
-                row("Reference gene expression",
-                    f"{ref_mean:.1f} RPM" if ref_mean is not None else dash()),
-                row("Reference gene PCC",
-                    f"{ref_pcc:.2f}" if ref_pcc is not None else dash()),
-                row("Tissue gene markers", f"({markers})" if markers else dash()),
-                row("Association",
-                    ui.span(badge_text, " – ", badge_help)),
-                class_="small mt-2",
-            ),
-            class_="mt-1",
-        )
-        return ui.TagList(blocks, why_row, details)
+        return blocks
 
     @render.ui
     def results_header():
@@ -1317,18 +1266,16 @@ def server(input: Inputs, output: Outputs, session: Session):
     # ----- Spectrum tab ------------------------------------------------------
 
     @render.ui
-    def spectrum_section():
+    def spectrum_message():
         mode = spectrum_mode.get()
-        if mode is None:
+        if mode is None or mode == "plot":
             return None
-        if mode != "plot":
-            return ui.div(
-                f"This cluster has {mode[1]} cells, too many to "
-                f"draw the spectrum (limit: {MAX_NAV_CELLS}). Use the children "
-                "buttons in the sidebar to move to a smaller cluster.",
-                class_="alert alert-info",
-            )
-        return output_widget("spectrum_plot")
+        return ui.div(
+            f"This cluster has {mode[1]} cells, too many to "
+            f"draw the spectrum (limit: {MAX_NAV_CELLS}). Use the children "
+            "buttons in the sidebar to move to a smaller cluster.",
+            class_="alert alert-info",
+        )
 
     @render_widget
     async def spectrum_plot():
